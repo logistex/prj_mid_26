@@ -40,8 +40,8 @@ def has_secret(name):
 
 # OpenRouter 무료 텍스트 모델 3개. 1차, 2차, 3차 순으로 부름(PRD_step3 5.1절)
 MODELS = (
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "cohere/north-mini-code:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "poolside/laguna-s-2.1:free",
 )
 AI_TIMEOUT_SECONDS = 120  # 모델 1개마다 응답을 기다리는 전체 시간의 한도

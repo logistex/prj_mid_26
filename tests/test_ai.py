@@ -280,7 +280,7 @@ def test_prompt_says_not_to_assign_students_who_already_have_a_team():
 def test_default_max_tokens_is_12000_and_models_are_the_chosen_three():
     assert ai.MAX_TOKENS == 12000
     assert MODELS == (
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
         "cohere/north-mini-code:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
         "poolside/laguna-s-2.1:free",
     )

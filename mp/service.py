@@ -485,8 +485,12 @@ def prepare_assignment(pool, user_id):
 def log_attempt(pool, attempt_no, attempt):
     with pool.connection() as conn:
         conn.execute(
-            "insert into tf_mp_ai_logs (model, attempt_no, outcome, seconds, detail) values (%s, %s, %s, %s, %s)",
-            (attempt.model, attempt_no, attempt.outcome, round(attempt.seconds, 1), attempt.detail or None),
+            "insert into tf_mp_ai_logs (model, attempt_no, outcome, seconds, detail,"
+            " finish_reason, prompt_tokens, completion_tokens, reasoning_tokens, response_head)"
+            " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (attempt.model, attempt_no, attempt.outcome, round(attempt.seconds, 1), attempt.detail or None,
+             attempt.finish_reason or None, attempt.prompt_tokens, attempt.completion_tokens,
+             attempt.reasoning_tokens, attempt.head or None),
         )
 
 

@@ -221,3 +221,43 @@ def test_real_120_second_limit_cuts_the_first_model_and_moves_on(server, monkeyp
     assert 119 <= attempts[0].seconds < 123
     assert source.startswith("2차 모델")
     print(f"\n1차 모델이 끊긴 시각: {attempts[0].seconds:.1f}초, 전체 {elapsed:.1f}초")
+
+
+# ---- 원인 분석용 기록: finish_reason, 토큰 수, 응답 앞부분 ----
+
+def test_empty_response_records_finish_reason_tokens_and_reasoning_head(server):
+    server.behaviors["m:free"] = ("empty",)
+    a = ask(server, "m:free")
+    assert a.outcome == ai.EMPTY
+    assert a.finish_reason == "length"
+    assert (a.prompt_tokens, a.completion_tokens, a.reasoning_tokens) == (900, 4000, 4000)
+    assert a.head.startswith("[추론] 먼저 규칙을 정리해 보면")
+    assert len(a.head) <= ai.HEAD_LIMIT
+
+
+def test_success_records_tokens_and_content_head(server):
+    server.behaviors["m:free"] = ("content", GOOD)
+    a = ask(server, "m:free")
+    assert a.finish_reason == "stop"
+    assert (a.prompt_tokens, a.completion_tokens, a.reasoning_tokens) == (900, 120, 20)
+    assert a.head.startswith('{"assignments"')
+
+
+def test_long_content_head_is_cut_to_500_characters(server):
+    server.behaviors["m:free"] = ("content", "가" * 3000)
+    a = ask(server, "m:free")
+    assert a.outcome == ai.BAD_FORMAT and len(a.head) == ai.HEAD_LIMIT
+
+
+def test_http_error_has_no_token_fields(server):
+    server.behaviors["m:free"] = ("status", 429)
+    a = ask(server, "m:free")
+    assert a.finish_reason == "" and a.prompt_tokens is None and a.head == ""
+
+
+def test_max_tokens_is_sent_to_the_server(server):
+    server.behaviors["m:free"] = ("content", GOOD)
+    ai.ask_model(KEY, "m:free", [], 5, server.url, never_fail)
+    ai.ask_model(KEY, "m:free", [], 5, server.url, never_fail, None, 12000)
+    assert [b["max_tokens"] for b in server.bodies] == [ai.MAX_TOKENS, 12000]
+    assert server.bodies[0]["reasoning"] == {"effort": "low"}

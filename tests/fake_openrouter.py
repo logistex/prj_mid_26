@@ -15,6 +15,7 @@ class FakeOpenRouter:
     def __init__(self, behaviors, port=0):
         self.behaviors = behaviors
         self.requests = []  # (모델 이름, Authorization 머리글이 있었는지)
+        self.bodies = []  # 받은 요청 본문(max_tokens 같은 값을 확인하는 시험용)
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -25,6 +26,7 @@ class FakeOpenRouter:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 model = body.get("model", "")
                 outer.requests.append((model, self.headers.get("Authorization", "").startswith("Bearer ")))
+                outer.bodies.append(body)
                 spec = outer.behaviors.get(model, ("status", 404))
                 kind = spec[0]
                 if kind == "sleep":
@@ -34,9 +36,15 @@ class FakeOpenRouter:
                     return self._send(spec[1], {"error": {"message": "Provider returned error", "code": spec[1]}})
                 if kind == "error200":
                     return self._send(200, {"error": {"message": "Provider returned error", "code": spec[1]}})
-                if kind == "empty":
-                    return self._send(200, {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
-                return self._send(200, {"choices": [{"message": {"content": spec[1]}, "finish_reason": "stop"}]})
+                if kind == "empty":  # 추론에 토큰을 모두 써서 content가 빈 응답
+                    return self._send(200, {
+                        "choices": [{"message": {"content": "", "reasoning": "먼저 규칙을 정리해 보면 " * 40}, "finish_reason": "length"}],
+                        "usage": {"prompt_tokens": 900, "completion_tokens": 4000, "completion_tokens_details": {"reasoning_tokens": 4000}},
+                    })
+                return self._send(200, {
+                    "choices": [{"message": {"content": spec[1]}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 900, "completion_tokens": 120, "completion_tokens_details": {"reasoning_tokens": 20}},
+                })
 
             def _send(self, status, payload):
                 data = json.dumps(payload).encode()

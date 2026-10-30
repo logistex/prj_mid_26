@@ -247,3 +247,18 @@ def test_proposal_without_check_pass_is_never_shown(closed_easy):
     res = service.generate_proposal(pool, prep, ask, MODELS, 120, ai.Progress())
     assert res.status == "막힘"
     assert service.load_proposal(pool) is None
+
+
+def test_log_attempt_stores_finish_reason_tokens_and_head(closed_easy):
+    pool = closed_easy
+    attempt = ai.Attempt("m1:free", ai.EMPTY, 12.3, "finish_reason=length", [], "length", 900, 4000, 4000, "[추론] 먼저 규칙을 정리해 보면")
+    service.log_attempt(pool, 2, attempt)
+    with pool.connection() as conn:
+        row = conn.execute(
+            "select attempt_no, outcome, seconds, finish_reason, prompt_tokens, completion_tokens, reasoning_tokens, response_head"
+            " from tf_mp_ai_logs where model = 'm1:free' order by id desc limit 1"
+        ).fetchone()
+    attempt_no, outcome, seconds, finish_reason, prompt, completion, reasoning, head = row
+    assert (attempt_no, outcome, float(seconds)) == (2, ai.EMPTY, 12.3)
+    assert (finish_reason, prompt, completion, reasoning) == ("length", 900, 4000, 4000)
+    assert head == "[추론] 먼저 규칙을 정리해 보면"

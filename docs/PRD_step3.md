@@ -190,11 +190,16 @@ create table if not exists tf_mp_ai_logs (
   attempt_no smallint not null,
   outcome    text not null,
   seconds    numeric(6,1),
-  detail     text
+  detail     text,
+  finish_reason     text,
+  prompt_tokens     integer,
+  completion_tokens integer,
+  reasoning_tokens  integer,
+  response_head     text
 );
 ```
 
-- 모델을 1번 부를 때마다 1행을 기록함. 모델 응답 본문과 요청 내용은 저장하지 않음(키와 학번 노출을 피하기 위함)
+- 모델을 1번 부를 때마다 1행을 기록함. 요청 내용은 저장하지 않고, 응답은 앞 500자(`response_head`)와 `finish_reason`, 토큰 수 3개만 저장함. `content`가 비었으면 추론 글의 앞부분을 `[추론] ...`으로 저장함. 실제 무료 모델이 빈 응답을 내는 원인을 기록으로 확인하려고 2026-10-30에 추가했음(이 문서 13장 9번). 응답 전문은 저장하지 않음
 - 관리자 화면에서 최근 기록 10행을 접힌 영역에 보여 줌. 시각은 한국 시각으로 바꿔 보여 줌(공고 4.4절, 배포 서버의 시각은 UTC)
 - 이 기록과 `assign_status` 화면이 README의 "AI 모델 호출 실패 사례와 그 화면"의 근거가 됨(공고 7.1절, README.md 양식 5항)
 
@@ -281,6 +286,7 @@ create table if not exists tf_mp_ai_logs (
 | 6 | 호출 기록 보존 | 명단을 새로 올려도 `tf_mp_ai_logs`는 지우지 않음. README의 호출 실패 사례 근거로 쓰기 위함임 |
 | 7 | 검사 순서 | 배정 검사 5가지는 검사 번호 순서로 모든 팀에 적용함(3번을 모든 팀에서 본 뒤 4번, 5번). 앞서 팀별로 3, 4, 5번을 보도록 짰다가 시험에서 어긋나 고쳤음 |
 | 8 | 확정 직전 | 확정은 `phase`를 배타 잠금으로 읽은 뒤 팀 행을 `id` 순서로 모두 잠그고, 현재 구성으로 5가지 검사를 다시 함 |
+| 9 | 호출 기록의 원인 분석 열 | `tf_mp_ai_logs`에 `finish_reason`, 토큰 수 3개, 응답 앞 500자를 더했음. `max_tokens`는 호출마다 값을 줄 수 있게 했음(기본은 4000 그대로) |
 
 ## 14. 구현 결과 요약 (2026-10-30)
 
@@ -299,3 +305,20 @@ create table if not exists tf_mp_ai_logs (
 
 - 2차와 3차가 5번 모두 `finish_reason=length`의 빈 응답이었음. 추론에 `max_tokens` 4000을 모두 써서 답이 비었을 가능성이 있으나 확인하지 않았음(응답 본문과 추론 토큰 수를 저장하지 않음)
 - 호출 기록 펼침 화면은 가짜 시험 행이 섞여 있어서 저장하지 않았음. 시험이 남긴 가짜 모델 행은 시험이 끝날 때 지우도록 `tests/conftest.py`에 넣었음
+
+## 15. 빈 응답 원인 실험 (2026-10-30, 실제 호출 4회)
+
+입력은 중간 시나리오 단계 9 직후(팀이 없는 학생 8명, 팀 4개, 메시지 1777자)이고, 결과는 `tf_mp_ai_logs`에 `[실험: ...]` 사유로 남아 있음. 실험 행의 차수(`attempt_no`)는 실제 순서가 아니라 모델 자리임.
+
+| 모델 | max_tokens | 결과 | 소요 | finish_reason | 토큰(prompt/completion/reasoning) |
+|---|---|---|---|---|---|
+| cohere/north-mini-code:free | 12000 | 검사 실패(검사 1번: 이미 팀이 있는 학생의 학번이 들어 있음) | 57.6초 | stop | 742 / 8047 / 8145 |
+| nvidia/nemotron-3.5-lightning:free | 12000 | 시간 초과 | 120.0초 | 없음 | 없음 |
+| poolside/laguna-s-2.1:free | 12000 | 성공 | 115.0초 | stop | 969 / 6489 / 6325 |
+| poolside/laguna-s-2.1:free | 4000, effort=minimal | HTTP 429 | 0.5초 | 없음 | 없음 |
+
+- 확인한 것: 2차(cohere)는 `max_tokens` 4000에서 `finish_reason=length`인 빈 응답이었고 12000에서는 `stop`으로 응답했음. 추론 토큰이 8145개라서 4000으로는 모자랐던 것임. 추론 토큰이 completion 토큰보다 많게 기록된 까닭(제공자의 집계 방식)은 확인하지 않았음
+- 확인한 것: `max_tokens`를 늘리면 빈 응답은 사라지지만 응답 시간이 57~115초로 길어져 한도 120초에 가까워짐. 3차(lightning)는 12000에서 120초 안에 응답하지 못했음
+- 확인한 것: 2차(cohere)는 응답했으나 이미 팀이 있는 학생을 배정에 넣어 검사 1번에서 걸림. 지시를 어긴 것이며, 응답 글에는 문제가 없었음
+- 확인하지 못한 것: 추론 강도를 `minimal`로 낮추면 빨라지는지. 시험한 1회가 429로 실패했음(실패한 호출도 하루 횟수에 들어감)
+- 이 실험은 모델마다 1회뿐이라 모델의 안정성을 판단하기에는 부족함

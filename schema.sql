@@ -72,7 +72,7 @@ create table if not exists tf_mp_votes (
 );
 alter table tf_mp_votes enable row level security;
 
--- 3단계: AI 호출 기록. 모델을 1번 부를 때마다 1행. 요청 내용과 응답 본문은 저장하지 않음
+-- 3단계: AI 호출 기록. 모델을 1번 부를 때마다 1행. 요청 내용은 저장하지 않고, 응답은 앞 500자와 토큰 수만 저장함
 create table if not exists tf_mp_ai_logs (
   id         bigint generated always as identity primary key,
   created_at timestamptz not null default now(),
@@ -80,6 +80,17 @@ create table if not exists tf_mp_ai_logs (
   attempt_no smallint not null,
   outcome    text not null,
   seconds    numeric(6,1),
-  detail     text
+  detail     text,
+  finish_reason     text,
+  prompt_tokens     integer,
+  completion_tokens integer,
+  reasoning_tokens  integer,
+  response_head     text
 );
+-- 이미 만든 테이블에는 원인 분석용 열을 더함(응답 앞 500자와 토큰 수)
+alter table tf_mp_ai_logs add column if not exists finish_reason text;
+alter table tf_mp_ai_logs add column if not exists prompt_tokens integer;
+alter table tf_mp_ai_logs add column if not exists completion_tokens integer;
+alter table tf_mp_ai_logs add column if not exists reasoning_tokens integer;
+alter table tf_mp_ai_logs add column if not exists response_head text;
 alter table tf_mp_ai_logs enable row level security;

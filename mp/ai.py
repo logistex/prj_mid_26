@@ -23,6 +23,9 @@ MAX_TOKENS = 4000  # 추론 토큰도 max_tokens에 들어가므로 빈 응답�
 APP_FALLBACK = "앱이 직접 배정"
 
 
+HEAD_LIMIT = 500  # 기록에 남기는 응답 앞부분의 글자 수
+
+
 @dataclass
 class Attempt:
     model: str
@@ -30,6 +33,12 @@ class Attempt:
     seconds: float
     detail: str = ""
     pairs: list = field(default_factory=list)
+    # 원인 분석용 기록(PRD_step3 8장): 응답이 왔을 때만 채워짐
+    finish_reason: str = ""
+    prompt_tokens: int = None
+    completion_tokens: int = None
+    reasoning_tokens: int = None
+    head: str = ""
 
 
 def _student_line(s):
@@ -95,12 +104,12 @@ def _clean(text, limit=80):
     return " ".join(text.split())[:limit]
 
 
-def _post(api_key, model, messages, timeout, base_url, out):
+def _post(api_key, model, messages, timeout, base_url, out, max_tokens=MAX_TOKENS):
     """작업 스레드에서 호출함. 결과를 out에 담음(dict). 예외는 분류해서 담음"""
     body = {
         "model": model,
         "messages": messages,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "reasoning": {"effort": "low"},
     }
     try:
@@ -123,7 +132,19 @@ def _post(api_key, model, messages, timeout, base_url, out):
             out["result"] = (HTTP_ERROR, _clean(f"HTTP {err.get('code', '?')} {err.get('message', '')}"), None)
             return
         choice = data["choices"][0]
-        content = (choice.get("message", {}).get("content") or "").strip()
+        message = choice.get("message", {})
+        content = (message.get("content") or "").strip()
+        usage = data.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        reasoning = (message.get("reasoning") or message.get("reasoning_content") or "").strip()
+        out["meta"] = {
+            "finish_reason": str(choice.get("finish_reason")),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "reasoning_tokens": details.get("reasoning_tokens"),
+            # content가 비었으면 추론 글의 앞부분을 남겨 무엇을 하다 끊겼는지 볼 수 있게 함
+            "head": _clean(content, HEAD_LIMIT) if content else (("[추론] " + _clean(reasoning, HEAD_LIMIT - 5)) if reasoning else ""),
+        }
         out["result"] = ("content", str(choice.get("finish_reason")), content)
     except requests.exceptions.RequestException as e:
         out["result"] = (CONNECTION_ERROR, type(e).__name__, None)
@@ -131,7 +152,7 @@ def _post(api_key, model, messages, timeout, base_url, out):
         out["result"] = (BAD_FORMAT, type(e).__name__, None)
 
 
-def ask_model(api_key, model, messages, timeout, base_url, check, tick=None):
+def ask_model(api_key, model, messages, timeout, base_url, check, tick=None, max_tokens=MAX_TOKENS):
     """모델 1개를 불러 Attempt를 돌려줌. 호출한 때부터 응답을 받을 때까지의 전체 대기 시간이 timeout초를 넘으면 끊음
 
     check(pairs)는 배정안 검사로, 통과하면 None, 어기면 이유 문구를 돌려줌. tick(경과 초)는 기다리는 동안 1초마다 부름
@@ -139,7 +160,7 @@ def ask_model(api_key, model, messages, timeout, base_url, check, tick=None):
     start = time.monotonic()
     out = {}
     worker = threading.Thread(
-        target=_post, args=(api_key, model, messages, timeout, base_url, out), daemon=True
+        target=_post, args=(api_key, model, messages, timeout, base_url, out, max_tokens), daemon=True
     )
     worker.start()
     while worker.is_alive():
@@ -154,16 +175,17 @@ def ask_model(api_key, model, messages, timeout, base_url, check, tick=None):
     kind, detail, content = out.get("result", (CONNECTION_ERROR, "결과 없음", None))
     if kind != "content":
         return Attempt(model, kind, seconds, detail)
+    meta = out.get("meta", {})
     if not content:
-        return Attempt(model, EMPTY, seconds, f"finish_reason={detail}")
+        return Attempt(model, EMPTY, seconds, f"finish_reason={detail}", **meta)
     try:
         pairs = parse_response(content)
     except ValueError as e:
-        return Attempt(model, BAD_FORMAT, seconds, str(e))
+        return Attempt(model, BAD_FORMAT, seconds, str(e), **meta)
     problem = check(pairs)
     if problem:
-        return Attempt(model, CHECK_FAILED, seconds, problem, pairs)
-    return Attempt(model, SUCCESS, seconds, "", pairs)
+        return Attempt(model, CHECK_FAILED, seconds, problem, pairs, **meta)
+    return Attempt(model, SUCCESS, seconds, "", pairs, **meta)
 
 
 class Progress:

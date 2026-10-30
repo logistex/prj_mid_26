@@ -1,13 +1,14 @@
 # 2026-10-30 21:58 KST
-"""팀 편성 앱의 화면(로그인, 명단 올리기, 지원, 투표, 모집 마감, 팀 목록). 화면 요소의 key는 공고 2.7절의 표를 그대로 따름
+"""팀 편성 앱의 화면(로그인, 명단 올리기, 지원, 투표, 모집 마감, AI 배정과 확정, 팀 목록). 화면 요소의 key는 공고 2.7절의 표를 그대로 따름
 
-로그인한 뒤의 본문 전체는 3초마다 자동으로 다시 그려지는 fragment 1개에 담음(PRD_step2 8장).
+로그인한 뒤의 본문은 3초마다 자동으로 다시 그려지는 fragment 1개에 담음(PRD_step2 8장).
 단추와 result가 같은 fragment 안에 있어야 단추를 눌렀을 때 result가 함께 갱신됨
+AI 배정 영역은 fragment 밖에 둠. 배정을 실행하는 동안에는 자동 갱신을 끄고 진행 안내를 1초마다 갱신함(PRD_step3 6장)
 """
 import streamlit as st
 
-from mp import service
-from mp.config import get_secret
+from mp import ai, rules, service
+from mp.config import ai_config, get_secret
 from mp.db import make_pool
 
 st.set_page_config(page_title="팀 편성", layout="centered")
@@ -94,6 +95,18 @@ def on_vote(applicant_no, choice):
     set_result(service.vote(pool, st.session_state.get("user_id"), applicant_no, choice))
 
 
+@guarded
+def on_assign():
+    # 이 실행에서만 배정을 진행함. 이전 결과 안내는 지워 두어, 배정이 끝난 뒤의 result가 이번 결과를 뜻하게 함
+    st.session_state["assigning"] = True
+    st.session_state["last_result"] = ""
+
+
+@guarded
+def on_confirm():
+    set_result(service.confirm_assignment(pool, st.session_state.get("user_id")))
+
+
 def role_line(person):
     line = f"{person['name']} · {person['main_role']}"
     if person["sub_roles"]:
@@ -137,7 +150,6 @@ def render_team(team, user, my_team_id, my_pending, phase):
                       args=(team["team_no"],))
 
 
-@st.fragment(run_every=REFRESH_INTERVAL)
 def main_view(user_id):
     render_result()
     try:
@@ -214,5 +226,75 @@ if user is None:
         st.form_submit_button("로그인", key="login_submit", on_click=on_login)
     st.stop()
 
+def render_proposal(view, proposal):
+    """검사를 통과한 배정안만 보여 줌: 팀마다 기존 팀원과 새로 배정된 학생(이름, 주 역할, 보조 역할)"""
+    if not proposal:
+        st.text("배정안 없음")
+        return
+    st.text(f"출처: {proposal['source']}")
+    by_no = {m["student_no"]: m for m in view["unassigned"]}
+    added = {}
+    for student_no, team_no in proposal["pairs"]:
+        added.setdefault(team_no, []).append(by_no[student_no] if student_no in by_no else None)
+    for team in view["teams"]:
+        st.text(f"{team['name']}")
+        for m in team["members"]:
+            st.text(f"  {role_line(m)}")
+        for m in added.get(team["team_no"], []):
+            st.text(f"  + {role_line(m)}" if m else "  + (알 수 없는 학생)")
+
+
+def run_assignment(user, status_box):
+    """AI 배정을 실행함. 끝나면 결과를 저장하고 전체를 다시 그림(자동 갱신을 되살림)"""
+    try:
+        models, limit, base_url = ai_config()
+        prep = service.prepare_assignment(pool, user["id"])
+        if prep.result is not None:
+            set_result(prep.result)
+        elif not get_secret("OPENROUTER_API_KEY"):
+            set_result(service.Result("막힘", "OPENROUTER_API_KEY 없음"))
+        else:
+            api_key = get_secret("OPENROUTER_API_KEY")
+            messages = ai.build_messages(prep.teams, prep.unassigned)
+
+            def check(pairs):
+                return rules.check_assignment(prep.teams, prep.unassigned, pairs)
+
+            def ask(n, model, tick):
+                return ai.ask_model(api_key, model, messages, limit, base_url, check, tick)
+
+            progress = ai.Progress(on_change=lambda p: status_box.text(p.text()))
+            set_result(service.generate_proposal(pool, prep, ask, models, limit, progress))
+    except Exception as e:
+        set_result(service.Result("막힘", f"처리하지 못함({type(e).__name__})"))
+    st.rerun()
+
+
+def admin_assign_area(user, assigning):
+    st.subheader("AI 배정")
+    st.button("AI 배정", key="admin_assign", on_click=on_assign, disabled=assigning)
+    with st.container(key="assign_status"):
+        status_box = st.empty()
+        if assigning:
+            status_box.text("배정을 시작함")
+        else:
+            status_box.text(service.get_setting(pool, "assign_status") or "")
+    st.subheader("배정안")
+    with st.container(key="proposal"):
+        render_proposal(service.load_view(pool), service.load_proposal(pool))
+    st.button("배정안 확정", key="admin_confirm", on_click=on_confirm)
+    with st.expander("최근 AI 호출 기록 10건"):
+        rows = service.recent_ai_logs(pool)
+        if not rows:
+            st.text("기록 없음")
+        for at, n, model, outcome, seconds, detail in rows:
+            st.text(f"{at} · {n}차 · {model} · {outcome} · {seconds}초" + (f" · {detail}" if detail else ""))
+    if assigning:
+        run_assignment(user, status_box)
+
+
+assigning = bool(st.session_state.pop("assigning", False))  # 중간에 끊겨도 다음 실행에서 배정이 다시 시작되지 않게 바로 지움
 st.button("로그아웃", key="logout", on_click=on_logout)
-main_view(user["id"])
+st.fragment(run_every=None if assigning else REFRESH_INTERVAL)(main_view)(user["id"])
+if user["is_admin"]:
+    admin_assign_area(user, assigning)

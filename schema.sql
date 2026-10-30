@@ -1,6 +1,6 @@
 -- 2026-10-30 21:58 KST
 -- 팀 편성 앱의 테이블. 이름은 모두 tf_mp_로 시작함. 다시 실행해도 오류가 없음
--- 1단계, 2단계 테이블. AI 호출 기록 테이블은 3단계에서 이 파일에 추가함
+-- 1단계(학생, 팀, 팀원, 설정), 2단계(지원, 투표), 3단계(AI 호출 기록) 테이블
 --
 -- RLS(행 수준 보안): 모든 테이블에서 켜고 정책을 만들지 않음. 앱은 DATABASE_URL로 소유자 역할에 직접 접속하므로
 -- RLS의 영향을 받지 않고, Supabase의 anon, authenticated 역할(공개 API 키)로는 어떤 행도 읽거나 쓸 수 없음
@@ -71,3 +71,15 @@ create table if not exists tf_mp_votes (
   primary key (application_id, voter_id)
 );
 alter table tf_mp_votes enable row level security;
+
+-- 3단계: AI 호출 기록. 모델을 1번 부를 때마다 1행. 요청 내용과 응답 본문은 저장하지 않음
+create table if not exists tf_mp_ai_logs (
+  id         bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  model      text not null,
+  attempt_no smallint not null,
+  outcome    text not null,
+  seconds    numeric(6,1),
+  detail     text
+);
+alter table tf_mp_ai_logs enable row level security;

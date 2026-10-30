@@ -1,5 +1,5 @@
 # 2026-10-30 21:58 KST
-"""서비스: 관리자 계정, 로그인, 명단으로 처음 상태 만들기(1단계), 지원, 투표, 모집 마감(2단계), 화면용 조회
+"""서비스: 관리자 계정, 로그인, 명단으로 처음 상태 만들기(1단계), 지원, 투표, 모집 마감(2단계), AI 배정과 확정(3단계), 화면용 조회
 
 모든 함수는 DB 연결 풀을 받음. 관리자 여부는 세션 값이 아니라 DB의 is_admin으로 확인함
 """
@@ -8,7 +8,9 @@ from dataclasses import dataclass
 import bcrypt
 from psycopg import errors
 
-from . import rules
+import json
+
+from . import ai, rules
 from .config import ADMIN_STUDENT_NO, DEFAULT_STUDENT_PASSWORD
 from .roster import RosterError, parse_roster
 
@@ -408,3 +410,154 @@ def close_recruitment(pool, user_id):
             " returning student_id"
         ).fetchall()
     return Result("승인", f"모집을 마감함. 대기 지원 {len(rejected)}건을 거절하고 {len(removed)}명이 팀에서 빠짐")
+
+
+# ---- 3단계: AI 배정과 확정(PRD_step3) ----
+
+def _set_setting(conn, key, value):
+    conn.execute(
+        "insert into tf_mp_settings (key, value) values (%s, %s)"
+        " on conflict (key) do update set value = excluded.value",
+        (key, value),
+    )
+
+
+def get_setting(pool, key):
+    with pool.connection() as conn:
+        row = conn.execute("select value from tf_mp_settings where key = %s", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_assign_status(pool, text):
+    with pool.connection() as conn:
+        _set_setting(conn, "assign_status", text)
+
+
+def _is_admin(conn, user_id):
+    row = conn.execute("select is_admin from tf_mp_students where id = %s", (user_id,)).fetchone()
+    return bool(row and row[0])
+
+
+def _teams_and_unassigned(conn):
+    """배정 입력: 지금의 팀 구성과 팀이 없는 학생. 학생은 id, student_no, name, main_role, sub_roles를 가짐"""
+    view = _load(conn)
+    teams = [
+        {"id": t["id"], "team_no": t["team_no"], "name": t["name"], "members": t["members"]}
+        for t in view["teams"]
+    ]
+    return view["phase"], teams, view["unassigned"]
+
+
+@dataclass
+class Prep:
+    """배정을 시작하기 전의 준비 결과. result가 있으면 거기서 끝남(막힘). 없으면 AI를 부를 수 있음"""
+    result: object = None
+    teams: list = None
+    unassigned: list = None
+    fallback: list = None
+
+
+def prepare_assignment(pool, user_id):
+    """사전 검사와 규칙을 지키는 배정 찾기(PRD_step3 3장 1, 2번). 규칙을 지키는 배정이 없으면 AI를 부르지 않음"""
+    with pool.connection() as conn:
+        if not _is_admin(conn, user_id):
+            return Prep(Result("막힘", "관리자만 할 수 있음"))
+        phase, teams, unassigned = _teams_and_unassigned(conn)
+    if phase is None:
+        return Prep(Result("막힘", "아직 명단이 올라오지 않음"))
+    if phase == "open":
+        return Prep(Result("막힘", "모집을 마감한 뒤에 배정할 수 있음"))
+    if phase == "confirmed":
+        return Prep(Result("막힘", "이미 확정함"))
+    if not unassigned:
+        return Prep(Result("막힘", "팀이 없는 학생이 없음"))
+    pairs, timed_out = rules.find_assignment(teams, unassigned)
+    if pairs is None:
+        if timed_out:
+            reason = "규칙을 지키는 배정을 찾지 못함(탐색 시간 초과)"
+        else:
+            reason = rules.explain_no_assignment(teams, unassigned)
+        set_assign_status(pool, f"규칙을 지키는 배정이 없음: {reason}" if not timed_out else reason)
+        return Prep(Result("막힘", "규칙을 지키는 배정이 없음"), teams, unassigned)
+    return Prep(None, teams, unassigned, pairs)
+
+
+def log_attempt(pool, attempt_no, attempt):
+    with pool.connection() as conn:
+        conn.execute(
+            "insert into tf_mp_ai_logs (model, attempt_no, outcome, seconds, detail) values (%s, %s, %s, %s, %s)",
+            (attempt.model, attempt_no, attempt.outcome, round(attempt.seconds, 1), attempt.detail or None),
+        )
+
+
+def recent_ai_logs(pool, limit=10):
+    with pool.connection() as conn:
+        return conn.execute(
+            "select to_char(created_at at time zone 'Asia/Seoul', 'MM-DD HH24:MI:SS'),"
+            " attempt_no, model, outcome, seconds, coalesce(detail, '')"
+            " from tf_mp_ai_logs order by id desc limit %s", (limit,)
+        ).fetchall()
+
+
+def generate_proposal(pool, prep, ask, models, limit, progress):
+    """AI에게 배정안을 받고, 3차까지 실패하면 앱이 찾은 배정을 씀. 검사를 통과한 배정안만 proposal로 저장함
+
+    ask(번호, 모델, tick)는 ai.Attempt를 돌려주는 함수임. 모델을 부르는 동안 DB 연결을 잡고 있지 않음
+    """
+    by_no = {s["student_no"]: s for s in prep.unassigned}
+
+    def check(pairs):
+        return rules.check_assignment(prep.teams, prep.unassigned, pairs)
+
+    pairs, source, _ = ai.propose(
+        models, ask, prep.fallback, lambda n, a: log_attempt(pool, n, a), progress, limit
+    )
+    problem = check(pairs)
+    if problem:  # 앱이 찾은 배정도 같은 검사를 통과해야 보여 줌
+        progress.note(f"배정안이 검사를 통과하지 못함: {problem}")
+        set_assign_status(pool, progress.text())
+        return Result("막힘", "검사를 통과한 배정안이 없음")
+    progress.note(f"검사를 통과한 배정안을 만듦(출처: {source})")
+    proposal = {"source": source, "pairs": [[no, team_no] for no, team_no in pairs]}
+    with pool.connection() as conn:
+        _set_setting(conn, "proposal", json.dumps(proposal, ensure_ascii=False))
+        _set_setting(conn, "assign_status", progress.text())
+    return Result("승인", f"배정안을 만듦({source})")
+
+
+def load_proposal(pool):
+    raw = get_setting(pool, "proposal")
+    return json.loads(raw) if raw else None
+
+
+def confirm_assignment(pool, user_id):
+    """배정안 확정(PRD_step3 7.2절). 한 트랜잭션에서 현재 구성으로 다시 검사한 뒤 팀원으로 저장함"""
+    mismatch = Result("막힘", "배정안이 현재 팀 구성과 맞지 않음. 다시 배정해야 함")
+    with pool.connection() as conn:
+        if not _is_admin(conn, user_id):
+            return Result("막힘", "관리자만 할 수 있음")
+        phase = _lock_phase(conn, exclusive=True)
+        if phase == "confirmed":
+            return Result("막힘", "이미 확정함")
+        if phase != "closed":
+            return Result("막힘", "모집을 마감한 뒤에 확정할 수 있음")
+        row = conn.execute("select value from tf_mp_settings where key = 'proposal'").fetchone()
+        if row is None:
+            return Result("막힘", "확정할 배정안이 없음")
+        pairs = [(no, team_no) for no, team_no in json.loads(row[0])["pairs"]]
+        conn.execute("select 1 from tf_mp_teams order by id for update").fetchall()  # 팀 행을 id 순서로 모두 잠금
+        _, teams, unassigned = _teams_and_unassigned(conn)
+        if rules.check_assignment(teams, unassigned, pairs):
+            return mismatch
+        team_id_of = {t["team_no"]: t["id"] for t in teams}
+        student_id_of = {s["student_no"]: s["id"] for s in unassigned}
+        try:
+            with conn.transaction():
+                for no, team_no in pairs:
+                    _join(conn, team_id_of[team_no], student_id_of[no])
+        except errors.UniqueViolation:
+            return mismatch
+        conn.execute("update tf_mp_settings set value = 'confirmed' where key = 'phase'")
+        conn.execute("delete from tf_mp_settings where key = 'proposal'")
+        _set_setting(conn, "assign_status", "배정안을 확정함")
+    return Result("승인", "배정안을 확정함")

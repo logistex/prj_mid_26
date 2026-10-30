@@ -60,6 +60,7 @@
 - 테이블 이름은 모두 `tf_mp_`로 시작함
 - 테이블을 만드는 SQL은 저장소의 `schema.sql` 1개에 둠(공고 5절, DB 최소 참고안). Supabase 화면에서 직접 만든 SQL도 여기에 넣음
 - `schema.sql`은 다시 실행해도 오류가 없게 `create table if not exists`를 씀. 실행은 `scripts/apply_schema.py`로 하고 앱이 시작할 때 자동 실행하지 않음
+- 모든 테이블에서 RLS(행 수준 보안)를 켜고 정책은 만들지 않음. 각 `create table` 뒤에 `alter table ... enable row level security;`가 붙음(실제 `schema.sql` 참고). 앱은 `DATABASE_URL`로 소유자 역할에 직접 접속하므로 영향을 받지 않고, Supabase의 `anon`, `authenticated` 역할(공개 API 키)로는 어떤 행도 읽거나 쓸 수 없음. 2026-10-30 Supabase 점검에서 RLS가 꺼져 있다는 지적을 받아 추가함. 적용 전에는 `anon` 역할이 학생 9명(비밀번호 해시 열 포함)을 읽을 수 있었고, 적용 뒤에는 0명임(`set local role anon`으로 확인함)
 
 ### 4.2 1단계 테이블
 
@@ -113,6 +114,7 @@ create table if not exists tf_mp_settings (
 | `main_role`, `role`의 `check` | 6개 역할 밖의 값 | 공고 5절(DB 최소 참고안) |
 | `is_admin = (main_role is null)` | 학생에게 역할이 없거나 관리자에게 역할이 있음 | 이 PRD의 판단 |
 | `tf_mp_students.student_no` 유일 | 학번 중복 | 공고 5절(DB 최소 참고안) |
+| RLS 켜고 정책 없음 | 공개 API 키(`anon`, `authenticated`)로 행을 읽거나 쓰는 일 | Supabase 보안 점검. 공고에는 없음 |
 
 ## 5. 기능 요구사항
 

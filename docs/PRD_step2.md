@@ -106,6 +106,7 @@ create unique index if not exists tf_mp_applications_one_pending
   on tf_mp_applications (student_id) where status = '대기';
 ```
 
+- 이 두 테이블(지원, 투표)에도 `alter table ... enable row level security;`를 적용함(PRD_step1 4.1절, 이름과 파일)
 - 시각은 UTC로 저장하고 화면에 보일 때만 한국 시각(`Asia/Seoul`)으로 바꿈(공고 4.4절, 배포 서버의 시각은 UTC)
 
 ## 5. 투표

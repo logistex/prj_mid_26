@@ -156,7 +156,7 @@ create table if not exists tf_mp_settings (
 - 초기화는 1개 트랜잭션으로 함. 중간에 실패하면 이전 상태를 유지함(공고 2.6절)
   1. `tf_mp_votes`, `tf_mp_applications`, `tf_mp_members`, `tf_mp_teams`를 비움
   2. `is_admin`이 거짓인 학생을 지움(보조 역할은 `cascade`로 함께 지워짐)
-  3. `tf_mp_settings`의 `phase`와 `proposal`을 지우고 `phase='open'`을 넣음
+  3. `tf_mp_settings`의 `phase`, `proposal`, `assign_status`를 지우고 `phase='open'`을 넣음. `proposal`과 `assign_status`는 PRD_step3 6장(AI 대기 중 화면)이 저장하는 값이며, 앞 시나리오의 배정 안내가 남지 않게 함
   4. 팀 `팀1`~`팀N`을 만듦(`team_no`는 1~N, 이 번호가 `team_{n}`의 n임)
   5. 학생과 보조 역할을 넣음. 비밀번호는 모두 `1234`를 `bcrypt`(rounds 10)로 해시해 학생마다 따로 저장함(공고 2.2절)
 - 성공하면 `result`에 `승인: 학생 8명과 빈 팀 3개로 처음 상태를 만듦` 같은 안내를 보여 줌

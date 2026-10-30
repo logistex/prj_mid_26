@@ -31,9 +31,6 @@ class Result:
 
 LOGIN_FAILED = Result("막힘", "학번 또는 비밀번호가 맞지 않음")
 
-# 명단을 새로 올릴 때 지우는 테이블(자식 테이블 먼저). 아직 없는 테이블은 건너뜀
-_RESET_TABLES = ("tf_mp_votes", "tf_mp_applications", "tf_mp_members", "tf_mp_teams")
-_RESET_SETTINGS = ("phase", "proposal", "assign_status")
 
 
 def hash_password(password):
@@ -119,25 +116,32 @@ def start_roster(pool, user_id, csv_bytes, team_count):
     hashes = [hash_password(DEFAULT_STUDENT_PASSWORD) for _ in students]
 
     with pool.connection() as conn:
-        for table in _RESET_TABLES:
-            if conn.execute("select to_regclass(%s)", (table,)).fetchone()[0] is not None:
-                conn.execute(f"delete from {table}")
-        conn.execute("delete from tf_mp_students where not is_admin")
-        conn.execute("delete from tf_mp_settings where key = any(%s)", (list(_RESET_SETTINGS),))
-        conn.execute("insert into tf_mp_settings (key, value) values ('phase', 'open')")
-        for n in range(1, team_count + 1):
-            conn.execute("insert into tf_mp_teams (team_no, name) values (%s, %s)", (n, f"팀{n}"))
-        for s, password_hash in zip(students, hashes):
-            student_id = conn.execute(
-                "insert into tf_mp_students (student_no, name, main_role, password_hash, is_admin)"
-                " values (%s, %s, %s, %s, false) returning id",
-                (s["student_no"], s["name"], s["main_role"], password_hash),
-            ).fetchone()[0]
-            for role in s["sub_roles"]:
-                conn.execute(
-                    "insert into tf_mp_student_sub_roles (student_id, role) values (%s, %s)",
-                    (student_id, role),
-                )
+        # 지우기와 상태 지정은 매개변수가 없으므로 문장 여러 개를 한 번에 보냄(왕복 1회)
+        conn.execute(
+            "delete from tf_mp_votes; delete from tf_mp_applications; delete from tf_mp_members;"
+            " delete from tf_mp_teams; delete from tf_mp_students where not is_admin;"
+            " delete from tf_mp_settings where key in ('phase', 'proposal', 'assign_status');"
+            " insert into tf_mp_settings (key, value) values ('phase', 'open')"
+        )
+        conn.execute(
+            "insert into tf_mp_teams (team_no, name) select n, '팀' || n from generate_series(1, %s) as n",
+            (team_count,),
+        )
+        ids = dict(conn.execute(
+            "insert into tf_mp_students (student_no, name, main_role, password_hash, is_admin)"
+            " select * from unnest(%s::text[], %s::text[], %s::text[], %s::text[], %s::boolean[])"
+            " returning student_no, id",
+            (
+                [x["student_no"] for x in students], [x["name"] for x in students],
+                [x["main_role"] for x in students], hashes, [False] * len(students),
+            ),
+        ).fetchall())
+        pairs = [(ids[x["student_no"]], role) for x in students for role in x["sub_roles"]]
+        if pairs:
+            conn.execute(
+                "insert into tf_mp_student_sub_roles (student_id, role) select * from unnest(%s::bigint[], %s::text[])",
+                ([p[0] for p in pairs], [p[1] for p in pairs]),
+            )
     return Result("승인", f"학생 {len(students)}명과 빈 팀 {team_count}개로 처음 상태를 만듦")
 
 
@@ -151,51 +155,57 @@ def _split_roles(text):
     return [r for r in text.split(";") if r]
 
 
-def _load(conn):
-    """화면에 그릴 팀 목록, 대기 지원, 팀이 없는 학생을 읽음. 질의 4회(사용자 조회까지 하면 6회)"""
-    teams = conn.execute("select id, team_no, name from tf_mp_teams order by team_no").fetchall()
-    members = conn.execute(
-        "select m.team_id, s.id, s.student_no, s.name, s.main_role, " + _SUB_ROLES_SQL +
-        " from tf_mp_members m join tf_mp_students s on s.id = m.student_id"
-        " order by m.team_id, m.slot_no"
-    ).fetchall()
-    unassigned = conn.execute(
-        "select s.id, s.student_no, s.name, s.main_role, " + _SUB_ROLES_SQL +
-        " from tf_mp_students s where not s.is_admin"
-        " and not exists (select 1 from tf_mp_members m where m.student_id = s.id)"
-        " order by s.student_no"
-    ).fetchall()
-    phase = conn.execute("select value from tf_mp_settings where key = 'phase'").fetchone()
-    pending = conn.execute(
-        "select a.id, a.team_id, s.id, s.student_no, s.name, s.main_role, " + _SUB_ROLES_SQL + ","
-        " coalesce((select json_agg(json_build_object('voter_id', v.voter_id, 'vote', v.vote))"
-        "  from tf_mp_votes v where v.application_id = a.id), '[]'::json)"
-        " from tf_mp_applications a join tf_mp_students s on s.id = a.student_id"
-        " where a.status = '대기' order by a.id"
-    ).fetchall()
+# 화면에 필요한 읽기를 질의 1개로 합침: 상태, 팀, 팀원, 팀이 없는 학생, 대기 지원과 투표(JSON으로 묶어 돌려받음)
+_VIEW_COLUMNS = (
+    "(select value from tf_mp_settings where key = 'phase') as phase,"
+    " (select coalesce(json_agg(t order by t.team_no), '[]'::json)"
+    "    from (select id, team_no, name from tf_mp_teams) t) as teams,"
+    " (select coalesce(json_agg(m), '[]'::json) from ("
+    "    select m.team_id, s.id, s.student_no, s.name, s.main_role, " + _SUB_ROLES_SQL + " as subs"
+    "    from tf_mp_members m join tf_mp_students s on s.id = m.student_id"
+    "    order by m.team_id, m.slot_no) m) as members,"
+    " (select coalesce(json_agg(u), '[]'::json) from ("
+    "    select s.id, s.student_no, s.name, s.main_role, " + _SUB_ROLES_SQL + " as subs"
+    "    from tf_mp_students s where not s.is_admin"
+    "    and not exists (select 1 from tf_mp_members m where m.student_id = s.id)"
+    "    order by s.student_no) u) as unassigned,"
+    " (select coalesce(json_agg(p), '[]'::json) from ("
+    "    select a.id as application_id, a.team_id, s.id, s.student_no, s.name, s.main_role, "
+    + _SUB_ROLES_SQL + " as subs,"
+    "    coalesce((select json_agg(json_build_object('voter_id', v.voter_id, 'vote', v.vote))"
+    "      from tf_mp_votes v where v.application_id = a.id), '[]'::json) as votes"
+    "    from tf_mp_applications a join tf_mp_students s on s.id = a.student_id"
+    "    where a.status = '대기' order by a.id) p) as pending"
+)
 
-    def person(sid, student_no, name, main_role, subs):
-        return {
-            "id": sid, "student_no": student_no, "name": name,
-            "main_role": main_role, "sub_roles": _split_roles(subs),
-        }
 
-    by_team = {t[0]: {"members": [], "pending": []} for t in teams}
-    for team_id, sid, student_no, name, main_role, subs in members:
-        by_team[team_id]["members"].append(person(sid, student_no, name, main_role, subs))
-    for app_id, team_id, sid, student_no, name, main_role, subs, votes in pending:
-        entry = person(sid, student_no, name, main_role, subs)
-        entry["application_id"] = app_id
-        entry["votes"] = {v["voter_id"]: v["vote"] for v in votes}
-        by_team[team_id]["pending"].append(entry)
+def _person(d):
     return {
-        "phase": phase[0] if phase else None,
-        "teams": [
-            {"id": team_id, "team_no": team_no, "name": name, **by_team[team_id]}
-            for team_id, team_no, name in teams
-        ],
-        "unassigned": [person(*row) for row in unassigned],
+        "id": d["id"], "student_no": d["student_no"], "name": d["name"],
+        "main_role": d["main_role"], "sub_roles": _split_roles(d["subs"]),
     }
+
+
+def _assemble(phase, teams, members, unassigned, pending):
+    """질의 결과(JSON을 읽은 값)를 화면용 구조로 바꿈"""
+    by_team = {t["id"]: {"members": [], "pending": []} for t in teams}
+    for m in members:
+        by_team[m["team_id"]]["members"].append(_person(m))
+    for p in pending:
+        entry = _person(p)
+        entry["application_id"] = p["application_id"]
+        entry["votes"] = {v["voter_id"]: v["vote"] for v in p["votes"]}
+        by_team[p["team_id"]]["pending"].append(entry)
+    return {
+        "phase": phase,
+        "teams": [{"id": t["id"], "team_no": t["team_no"], "name": t["name"], **by_team[t["id"]]} for t in teams],
+        "unassigned": [_person(u) for u in unassigned],
+    }
+
+
+def _load(conn):
+    """화면에 그릴 팀 목록, 대기 지원, 팀이 없는 학생을 읽음. 질의 1개(왕복 1회)"""
+    return _assemble(*conn.execute("select " + _VIEW_COLUMNS).fetchone())
 
 
 def load_view(pool):
@@ -204,15 +214,36 @@ def load_view(pool):
 
 
 def load_page(pool, user_id):
-    """(사용자, 화면 내용)을 연결 1개로 읽음. 계정이 없으면 (None, None)"""
+    """(사용자, 화면 내용)을 질의 1개로 읽음. 계정이 없으면 (None, None)"""
     with pool.connection() as conn:
         row = conn.execute(
-            "select id, student_no, name, is_admin from tf_mp_students where id = %s", (user_id,)
+            "select (select row_to_json(u) from"
+            " (select id, student_no, name, is_admin from tf_mp_students where id = %s) u) as me, "
+            + _VIEW_COLUMNS, (user_id,),
         ).fetchone()
-        if row is None:
-            return None, None
-        user = {"id": row[0], "student_no": row[1], "name": row[2], "is_admin": row[3]}
-        return user, _load(conn)
+    if row[0] is None:
+        return None, None
+    me = row[0]
+    return {"id": me["id"], "student_no": me["student_no"], "name": me["name"], "is_admin": me["is_admin"]}, _assemble(*row[1:])
+
+
+def load_admin_page(pool):
+    """관리자 배정 영역에 필요한 것(화면 내용, 배정 진행 안내, 배정안, 최근 AI 호출 기록 10건)을 질의 1개로 읽음"""
+    with pool.connection() as conn:
+        row = conn.execute(
+            "select " + _VIEW_COLUMNS + ","
+            " (select value from tf_mp_settings where key = 'assign_status') as assign_status,"
+            " (select value from tf_mp_settings where key = 'proposal') as proposal,"
+            " (select coalesce(json_agg(l), '[]'::json) from ("
+            "    select to_char(created_at at time zone 'Asia/Seoul', 'MM-DD HH24:MI:SS') as at, attempt_no, model,"
+            "    outcome, seconds, coalesce(detail, '') as detail from tf_mp_ai_logs order by id desc limit 10) l) as logs"
+        ).fetchone()
+    return {
+        "view": _assemble(*row[:5]),
+        "assign_status": row[5] or "",
+        "proposal": json.loads(row[6]) if row[6] else None,
+        "logs": row[7],
+    }
 
 
 # ---- 2단계: 지원, 투표, 모집 마감 ----

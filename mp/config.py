@@ -42,7 +42,7 @@ def has_secret(name):
 MODELS = (
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "cohere/north-mini-code:free",
-    "nvidia/nemotron-3.5-lightning:free",
+    "poolside/laguna-s-2.1:free",
 )
 AI_TIMEOUT_SECONDS = 120  # 모델 1개마다 응답을 기다리는 전체 시간의 한도
 AI_BASE_URL = "https://openrouter.ai/api/v1"

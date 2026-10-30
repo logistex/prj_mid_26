@@ -23,9 +23,16 @@ def get_pool():
 
 
 @st.cache_resource
+def get_read_pool():
+    """읽기 전용 풀(autocommit). 화면을 그릴 때 질의마다 BEGIN과 COMMIT을 따로 보내지 않아 DB 왕복이 줄어듦"""
+    return make_pool(get_secret("DATABASE_URL"), max_size=3, autocommit=True)
+
+
+@st.cache_resource
 def init_app():
     pool = get_pool()
     service.ensure_admin(pool, get_secret("ADMIN_PASSWORD"))
+    get_read_pool()
     return pool
 
 
@@ -63,11 +70,13 @@ def on_login():
     )
     if user_id is not None:
         st.session_state["user_id"] = user_id
+        st.session_state["user"] = service.get_user(get_read_pool(), user_id)  # 화면을 그릴 때마다 읽지 않게 세션에 둠
     set_result(res)
 
 
 def on_logout():
     st.session_state.pop("user_id", None)
+    st.session_state.pop("user", None)
     set_result(service.Result("승인", "로그아웃함"))
 
 
@@ -153,12 +162,13 @@ def render_team(team, user, my_team_id, my_pending, phase):
 def main_view(user_id):
     render_result()
     try:
-        user, view = service.load_page(pool, user_id)
+        user, view = service.load_page(get_read_pool(), user_id)
     except Exception as e:
         st.error(f"DB 오류({type(e).__name__})")
         return
     if user is None:
         st.session_state.pop("user_id", None)
+        st.session_state.pop("user", None)
         set_result(service.Result("막힘", "명단이 새로 올라와 계정이 사라짐. 다시 로그인해야 함"))
         st.rerun()
 
@@ -200,11 +210,13 @@ def main_view(user_id):
 
 st.title("팀 편성")
 
-user = None
+# 로그인한 사용자는 세션에 저장해 둔 것을 씀(DB 왕복 0회). 계정이 사라진 경우는 main_view가 3초 안에 알아채 로그아웃함.
+# 관리자 기능은 이 값을 믿지 않고 서비스 함수가 DB의 is_admin으로 다시 확인함
+user = st.session_state.get("user")
 user_id = st.session_state.get("user_id")
-if user_id is not None:
+if user_id is not None and user is None:
     try:
-        user = service.get_user(pool, user_id)
+        user = st.session_state["user"] = service.get_user(get_read_pool(), user_id)
     except Exception as e:
         st.error(f"DB 오류({type(e).__name__})")
         st.stop()
@@ -273,22 +285,20 @@ def run_assignment(user, status_box):
 def admin_assign_area(user, assigning):
     st.subheader("AI 배정")
     st.button("AI 배정", key="admin_assign", on_click=on_assign, disabled=assigning)
+    data = service.load_admin_page(get_read_pool())  # 질의 1개로 읽음
     with st.container(key="assign_status"):
         status_box = st.empty()
-        if assigning:
-            status_box.text("배정을 시작함")
-        else:
-            status_box.text(service.get_setting(pool, "assign_status") or "")
+        status_box.text("배정을 시작함" if assigning else data["assign_status"])
     st.subheader("배정안")
     with st.container(key="proposal"):
-        render_proposal(service.load_view(pool), service.load_proposal(pool))
+        render_proposal(data["view"], data["proposal"])
     st.button("배정안 확정", key="admin_confirm", on_click=on_confirm)
     with st.expander("최근 AI 호출 기록 10건"):
-        rows = service.recent_ai_logs(pool)
-        if not rows:
+        if not data["logs"]:
             st.text("기록 없음")
-        for at, n, model, outcome, seconds, detail in rows:
-            st.text(f"{at} · {n}차 · {model} · {outcome} · {seconds}초" + (f" · {detail}" if detail else ""))
+        for row in data["logs"]:
+            st.text(f"{row['at']} · {row['attempt_no']}차 · {row['model']} · {row['outcome']} · {row['seconds']}초"
+                    + (f" · {row['detail']}" if row["detail"] else ""))
     if assigning:
         run_assignment(user, status_box)
 

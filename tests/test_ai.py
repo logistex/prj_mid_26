@@ -261,3 +261,26 @@ def test_max_tokens_is_sent_to_the_server(server):
     ai.ask_model(KEY, "m:free", [], 5, server.url, never_fail, None, 12000)
     assert [b["max_tokens"] for b in server.bodies] == [ai.MAX_TOKENS, 12000]
     assert server.bodies[0]["reasoning"] == {"effort": "low"}
+
+
+# ---- 프롬프트와 설정(PRD_step3 15장 대응) ----
+
+def test_prompt_says_not_to_assign_students_who_already_have_a_team():
+    text = ai.build_messages(TEAMS, UNASSIGNED)[1]["content"]
+    assert "이미 있는 학생은 옮기지 않으며" in text and "assignments에 넣지 않습니다" in text
+    assert "assignments의 항목 수는 students_without_team의 학생 수와 같아야 합니다" in text
+    assert "JSON만 쓰십시오" in text and "코드 블록 표시" in text
+    # 데이터에는 기존 팀원과 팀이 없는 학생이 이름과 역할을 포함해 구분되어 들어감
+    data = json.loads(text.split("데이터:\n", 1)[1])
+    assert [m["student_no"] for m in data["teams"][0]["members"]] == ["1"]
+    assert [s["student_no"] for s in data["students_without_team"]] == ["3", "4"]
+    assert set(data["students_without_team"][0]) == {"student_no", "name", "main_role", "sub_roles"}
+
+
+def test_default_max_tokens_is_12000_and_models_are_the_chosen_three():
+    assert ai.MAX_TOKENS == 12000
+    assert MODELS == (
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "cohere/north-mini-code:free",
+        "poolside/laguna-s-2.1:free",
+    )

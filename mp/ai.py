@@ -19,7 +19,7 @@ TIMEOUT = "시간 초과"
 HTTP_ERROR = "HTTP 오류"
 CONNECTION_ERROR = "연결 오류"
 
-MAX_TOKENS = 4000  # 추론 토큰도 max_tokens에 들어가므로 빈 응답을 피하려고 넉넉하게 줌
+MAX_TOKENS = 12000  # 추론 토큰도 max_tokens에 들어가므로 넉넉하게 줌(4000에서는 추론에 다 써서 빈 응답이 났음, PRD_step3 15장)
 APP_FALLBACK = "앱이 직접 배정"
 
 
@@ -60,14 +60,16 @@ def build_messages(teams, unassigned):
         "students_without_team": [_student_line(s) for s in unassigned],
     }
     rules = (
-        "팀이 없는 학생을 팀에 배정하십시오. 이미 팀에 있는 학생은 옮기지 않습니다.\n"
+        "students_without_team에 있는 학생(팀이 없는 학생)만 팀에 배정하십시오. "
+        "teams의 members에 이미 있는 학생은 옮기지 않으며, 답의 assignments에 넣지 않습니다.\n"
         "규칙:\n"
-        "1. 팀이 없는 학생 모두를 빠짐없이, 한 학생당 한 팀에만 배정합니다.\n"
+        "1. students_without_team의 학생 모두를 빠짐없이, 한 학생당 한 팀에만 배정합니다. "
+        "assignments의 항목 수는 students_without_team의 학생 수와 같아야 합니다.\n"
         "2. 배정한 뒤 모든 팀은 2명 이상 4명 이하여야 합니다(빈 팀도 2명 이상이 되어야 합니다).\n"
         "3. 한 팀 안에서 main_role(주 역할)이 같은 학생이 2명 이상이면 안 됩니다.\n"
         "4. 모든 팀에서 기획자와 웹 프로그래머를 서로 다른 학생이 1명씩 맡을 수 있어야 합니다. "
         "학생은 main_role 또는 sub_roles에 그 역할이 있으면 맡을 수 있습니다.\n"
-        "답은 다른 설명 없이 JSON만 쓰십시오. 형식: "
+        "답은 JSON만 쓰십시오. 설명, 풀이 과정, 코드 블록 표시(```)를 쓰지 않습니다. 형식: "
         '{"assignments": [{"student_no": "학번", "team_no": 팀 번호}, ...]}\n\n'
         "데이터:\n" + json.dumps(data, ensure_ascii=False)
     )

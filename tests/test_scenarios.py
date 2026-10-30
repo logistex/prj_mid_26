@@ -319,6 +319,10 @@ def test_final_stage_with_real_free_models(name, monkeypatch):
     final = run_final_stage(name, session, [])
     print_table(final)
     calls = query("select count(*) from tf_mp_ai_logs")[0][0] - before
-    attempts = last_ai_log_rows(calls)
-    print(f"\n[{name}] 실제 OpenRouter 호출 {calls}회: {attempts}")
+    print(f"\n[{name}] 실제 OpenRouter 호출 {calls}회")
+    for r in query(
+        "select attempt_no, model, outcome, seconds, finish_reason, prompt_tokens, completion_tokens, reasoning_tokens,"
+        " coalesce(detail, '') from (select * from tf_mp_ai_logs order by id desc limit %s) x order by id", (calls,)
+    ):
+        print(f"  호출 {r[0]}차 | {r[1]} | {r[2]} | {r[3]}초 | finish_reason={r[4]} | 토큰 {r[5]}/{r[6]}/{r[7]} | {r[8]}")
     assert all(r[3] == r[4] for r in final), final

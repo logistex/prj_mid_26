@@ -211,7 +211,14 @@ def main_view(user_id):
         with st.container(border=True):
             st.subheader("명단과 마감")
             st.file_uploader("명단 CSV", type="csv", key="admin_roster_file")
-            st.number_input("팀 수", min_value=1, value=3, step=1, key="admin_team_count")
+            # 팀 수 칸은 DB의 지금 팀 수에서 시작하고, DB의 팀 수가 바뀔 때만 따라감(직접 바꾼 값은 그대로 둠). 팀이 없을 때만 3임
+            db_team_count = len(view["teams"])
+            if "admin_team_count" not in st.session_state or (
+                db_team_count and st.session_state.get("team_count_in_db") != db_team_count
+            ):
+                st.session_state["admin_team_count"] = db_team_count or 3
+            st.session_state["team_count_in_db"] = db_team_count
+            st.number_input("팀 수", min_value=1, step=1, key="admin_team_count")
             st.button("명단으로 처음 상태 만들기", key="admin_start", on_click=on_start)
             st.caption("이 단추를 누르면 기존 팀, 지원, 투표, 학생 계정이 모두 지워지고 올린 명단으로 새로 만듦")
             st.divider()

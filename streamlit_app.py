@@ -7,10 +7,10 @@ AI 배정 영역은 fragment 밖에 둠. 배정을 실행하는 동안에는 자
 """
 import streamlit as st
 
-from mp import ai, rules, service
+from mp import ai, practice_view, rules, service
 from mp.config import ai_config, get_secret
 from mp.db import make_pool
-from mp.style import CSS
+from mp.style import CSS, WIDE_CSS
 
 st.set_page_config(page_title="팀 편성", page_icon="👥", layout="centered")
 
@@ -85,6 +85,7 @@ def on_login():
 def on_logout():
     st.session_state.pop("user_id", None)
     st.session_state.pop("user", None)
+    practice_view.clear()  # 다음 로그인한 사람이 앞 사람의 연습 기록을 보지 않게 함
     set_result(service.Result("승인", "로그아웃함"))
 
 
@@ -337,6 +338,17 @@ def admin_assign_area(user, assigning):
 
 assigning = bool(st.session_state.pop("assigning", False))  # 중간에 끊겨도 다음 실행에서 배정이 다시 시작되지 않게 바로 지움
 st.button("로그아웃", key="logout", on_click=on_logout)
-st.fragment(run_every=None if assigning else REFRESH_INTERVAL)(main_view)(user["id"])
 if user["is_admin"]:
-    admin_assign_area(user, assigning)
+    # 관리자에게만 탭 2개를 보임. "팀 편성" 탭이 처음 열리고 그 안이 학생 화면과 같은 기본 화면임(공고 2.7절의 key가 첫 화면에 있음).
+    # on_change="rerun"이면 선택한 탭만 실행되므로 "시나리오 실행" 탭의 코드는 그 탭이 열렸을 때만 돎(PRD_step4 4.1절)
+    team_tab, practice_tab = st.tabs(["팀 편성", "시나리오 실행"], key="main_tabs", on_change="rerun")
+    with team_tab:
+        # 다른 탭을 보는 동안에는 3초마다 다시 그리지 않음
+        st.fragment(run_every=None if assigning or not team_tab.open else REFRESH_INTERVAL)(main_view)(user["id"])
+        admin_assign_area(user, assigning)
+    if practice_tab.open:
+        st.html(WIDE_CSS)  # 좌우 분할이 좁지 않게 이 탭이 열려 있는 동안만 본문 폭을 넓힘
+        with practice_tab:
+            practice_view.render(pool, user)
+else:
+    st.fragment(run_every=None if assigning else REFRESH_INTERVAL)(main_view)(user["id"])

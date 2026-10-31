@@ -16,3 +16,10 @@ CSS = """
 }
 </style>
 """
+
+# "시나리오 실행" 탭이 열려 있는 동안에만 본문 폭을 넓힘(centered 레이아웃의 본문은 736px라 좌우 분할이 좁음). 다른 화면은 그대로임
+WIDE_CSS = """
+<style>
+[data-testid="stMainBlockContainer"] { max-width: 1400px !important; }
+</style>
+"""

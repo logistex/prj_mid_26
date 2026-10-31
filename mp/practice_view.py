@@ -1,53 +1,34 @@
-# 2026-10-31 11:18 KST
-"""연습 시나리오 실행 페이지(PRD_step4). 관리자가 명단 CSV와 단계표 CSV를 올리면 단계표의 동작을 지금 있는 서비스 함수로 1개씩 실행하고,
-실행 전과 후의 팀 배정 현황을 나란히 보여 줌. 좌측은 시나리오(하위 단계 목록), 우측은 선택한 하위 단계의 이전과 이후
+# 2026-10-31 13:07 KST
+"""연습 시나리오 실행 화면(PRD_step4). 기본 화면의 "시나리오 실행" 탭에 그려짐(관리자만). 관리자가 명단 CSV와 단계표 CSV를 올리면
+단계표의 동작을 지금 있는 서비스 함수로 1개씩 실행하고, 실행 전과 후의 팀 배정 현황을 나란히 보여 줌.
+좌측은 시나리오(하위 단계 목록), 우측은 선택한 하위 단계의 이전과 이후
 
-공고 2.7절의 key를 쓰는 기본 화면(streamlit_app.py)과 별도 페이지이고, 이 페이지의 key는 모두 practice_로 시작함.
-저장한 기록은 세션 상태에만 둠(PRD_step4 3.7절). 이 페이지에는 어떤 시나리오의 학번, 이름, 단계 번호도 쓰지 않음
+공고 2.7절의 key를 쓰는 "팀 편성" 탭과 섞이지 않게, 이 화면의 key는 모두 practice_로 시작함.
+저장한 기록은 세션 상태에만 둠(PRD_step4 3.7절). 이 화면에는 어떤 시나리오의 학번, 이름, 단계 번호도 쓰지 않음
 """
 import streamlit as st
 
 from mp import ai, practice, practice_run, rules, service
 from mp.config import ai_config, get_secret
-from mp.db import make_pool
 from mp.practice import md_escape as md
 from mp.roster import RosterError, parse_roster
-from mp.style import CSS
-
-st.set_page_config(page_title="연습 시나리오", page_icon="🧪", layout="wide")
-st.html(CSS)
-st.title("연습 시나리오 실행")
-st.warning("채점 프로그램이 이 앱을 조작하는 동안에는 이 페이지를 쓰지 마십시오. "
-           "\"시나리오 시작\"은 기존 팀, 지원, 투표를 모두 지웁니다.")
 
 S = st.session_state
 VERDICT_COLOR = {"일치": "green", "불일치": "red", "비교 없음": "gray", "건너뜀": "gray"}
+WARNING = ("채점 프로그램이 이 앱을 조작하는 동안에는 이 탭을 쓰지 마십시오. "
+           "\"시나리오 시작\"은 기존 팀, 지원, 투표를 모두 지웁니다.")
+STATE_KEYS = ("practice_units", "practice_records", "practice_selected", "practice_pending", "practice_running",
+              "practice_errors")
+_pool = None  # render가 받은 연결 풀. 기본 화면이 만든 풀을 함께 씀(프로세스 안에서 하나뿐이므로 세션이 달라도 같음)
 
 
-@st.cache_resource
-def get_pool():
-    """이 페이지 자신의 연결 풀(최대 2개). 기본 화면의 풀과 섞지 않음"""
-    return make_pool(get_secret("DATABASE_URL"), max_size=2)
+def clear():
+    """로그아웃할 때 이 화면의 저장한 기록을 지움"""
+    for key in STATE_KEYS:
+        S.pop(key, None)
 
 
 # ---- 단추를 눌렀을 때 ----
-
-def on_login():
-    try:
-        pool = get_pool()
-        res, user_id = service.login(pool, S.get("practice_login_student_no"), S.get("practice_login_password"))
-        if user_id is not None:
-            S["practice_user"] = service.get_user(pool, user_id)
-        S["practice_message"] = res.text
-    except Exception as e:
-        S["practice_message"] = f"막힘: 처리하지 못함({type(e).__name__})"
-
-
-def on_logout():
-    for key in ("practice_user", "practice_units", "practice_records", "practice_selected", "practice_pending",
-                "practice_running", "practice_errors", "practice_message"):
-        S.pop(key, None)
-
 
 def on_start():
     S.pop("practice_errors", None)
@@ -71,7 +52,7 @@ def on_start():
         S["practice_errors"] = [f"단계표 CSV {m}" for m in errors]
         return
     try:
-        res = service.start_roster(get_pool(), S["practice_user"]["id"], roster_file.getvalue(), team_count)
+        res = service.start_roster(_pool, S["user_id"], roster_file.getvalue(), team_count)
     except Exception as e:
         S["practice_errors"] = [f"처리하지 못함({type(e).__name__})"]
         return
@@ -207,7 +188,7 @@ def ask_factory(api_key, limit, base_url):
 def ai_box():
     """배정 하위 단계의 행 안: 실제 모델을 부르는지 켜고 끄는 토글과 오늘 호출 횟수"""
     try:
-        used = service.count_ai_calls_today(get_pool())
+        used = service.count_ai_calls_today(_pool)
     except Exception:
         used = None
     q = practice.quota(used) if used is not None else None
@@ -264,7 +245,7 @@ def build_plan(unit, status_box):
     api_key = get_secret("OPENROUTER_API_KEY")
     if not api_key:
         return None
-    used = service.count_ai_calls_today(get_pool())
+    used = service.count_ai_calls_today(_pool)
     if practice.quota(used).blocked:
         return None
     models, limit, base_url = ai_config()
@@ -280,7 +261,7 @@ def run_pending(unit, records):
         st.error("실제 모델을 부를 수 없음(OPENROUTER_API_KEY 없음 또는 오늘 한도를 넘김). 토글을 끄고 다시 누르십시오")
         return
     S["practice_running"] = unit.label
-    record = practice_run.run_unit(get_pool(), S["practice_user"]["id"], [r.to_action() for r in unit.rows], plan)
+    record = practice_run.run_unit(_pool, S["user_id"], [r.to_action() for r in unit.rows], plan)
     S.pop("practice_running", None)
     records[unit.label] = record
     S["practice_records"] = records
@@ -298,69 +279,57 @@ def prep_form():
         st.markdown(f":red[{md(message)}]")
 
 
-# ---- 로그인과 권한 ----
+def render(pool, user):
+    """"시나리오 실행" 탭의 내용. 관리자만 부름(이 탭이 열려 있을 때만 실행됨)"""
+    global _pool
+    _pool = pool
+    if not user["is_admin"]:  # 기본 화면이 관리자에게만 이 탭을 그리지만, 여기서도 다시 막음
+        st.error("관리자만 쓸 수 있음")
+        return
+    st.warning(WARNING)
+    units = S.get("practice_units")
+    if not units:
+        st.info("시작한 시나리오가 없음(저장한 기록이 없음). 아래에서 명단 CSV와 단계표 CSV를 올려 시작해야 함")
+        prep_form()
+        return
 
-user = S.get("practice_user")
-if user is None:
-    with st.form("practice_login_form"):
-        st.text_input("학번", key="practice_login_student_no")
-        st.text_input("비밀번호", type="password", key="practice_login_password")
-        st.form_submit_button("로그인", key="practice_login_submit", on_click=on_login)
-    if S.get("practice_message"):
-        st.markdown(md(S["practice_message"]))
-    st.stop()
+    with st.expander("준비(다시 시작)"):
+        prep_form()
 
-st.markdown(f"{md(user['name'])} ({md(user['student_no'])})")
-st.button("로그아웃", key="practice_logout", on_click=on_logout)
-if not user["is_admin"]:
-    st.error("관리자만 쓸 수 있음")
-    st.stop()
+    records = S.get("practice_records", {})
+    states = practice.unit_states(units, records, S.get("practice_running"))
+    by_label = {u.label: (u, st_) for u, st_ in zip(units, states)}
+    pending = S.get("practice_pending")
+    if pending is not None and not (pending in by_label and by_label[pending][1] == "다음 차례"):
+        S.pop("practice_pending", None)  # 이미 실행했거나 실행할 수 없는 요청은 버림
+        pending = None
+    busy = pending is not None
+    selected = S.get("practice_selected")
 
-# ---- 준비와 작업 영역 ----
+    left, right = st.columns([2, 3])
+    with left:
+        st.subheader("시나리오")
+        with st.container(height=640):
+            for unit, state in zip(units, states):
+                render_unit_row(unit, state, records.get(unit.label), busy, unit.label == selected)
 
-units = S.get("practice_units")
-if not units:
-    st.info("시작한 시나리오가 없음(저장한 기록이 없음). 아래에서 명단 CSV와 단계표 CSV를 올려 시작해야 함")
-    prep_form()
-    st.stop()
-
-with st.expander("준비(다시 시작)"):
-    prep_form()
-
-records = S.get("practice_records", {})
-states = practice.unit_states(units, records, S.get("practice_running"))
-by_label = {u.label: (u, st_) for u, st_ in zip(units, states)}
-pending = S.get("practice_pending")
-if pending is not None and not (pending in by_label and by_label[pending][1] == "다음 차례"):
-    S.pop("practice_pending", None)  # 이미 실행했거나 실행할 수 없는 요청은 버림
-    pending = None
-busy = pending is not None
-selected = S.get("practice_selected")
-
-left, right = st.columns([2, 3])
-with left:
-    st.subheader("시나리오")
-    with st.container(height=640):
-        for unit, state in zip(units, states):
-            render_unit_row(unit, state, records.get(unit.label), busy, unit.label == selected)
-
-with right:
-    if pending is not None:
-        run_pending(by_label[pending][0], records)
-    elif selected in by_label:
-        unit, state = by_label[selected]
-        if state == "실행함":
-            index = units.index(unit)
-            previous = records.get(units[index - 1].label) if index > 0 else None
-            render_record(unit, records[selected], previous, units)
+    with right:
+        if pending is not None:
+            run_pending(by_label[pending][0], records)
+        elif selected in by_label:
+            unit, state = by_label[selected]
+            if state == "실행함":
+                index = units.index(unit)
+                previous = records.get(units[index - 1].label) if index > 0 else None
+                render_record(unit, records[selected], previous, units)
+            else:
+                st.subheader(f"하위 단계 {unit.label} · {unit.kind}")
+                st.info("아직 실행하지 않았음. " + ("좌측의 실행을 누르십시오" if state == "다음 차례" else "앞 하위 단계부터 실행해야 함"))
+                try:
+                    with st.container(key="practice_after"):
+                        st.markdown("**지금 상태**")
+                        render_view(service.load_view(_pool), [], "after")
+                except Exception as e:
+                    st.caption(f"지금 상태를 읽지 못함({type(e).__name__})")
         else:
-            st.subheader(f"하위 단계 {unit.label} · {unit.kind}")
-            st.info("아직 실행하지 않았음. " + ("좌측의 실행을 누르십시오" if state == "다음 차례" else "앞 하위 단계부터 실행해야 함"))
-            try:
-                with st.container(key="practice_after"):
-                    st.markdown("**지금 상태**")
-                    render_view(service.load_view(get_pool()), [], "after")
-            except Exception as e:
-                st.caption(f"지금 상태를 읽지 못함({type(e).__name__})")
-    else:
-        st.info("좌측에서 하위 단계를 누르십시오")
+            st.info("좌측에서 하위 단계를 누르십시오")

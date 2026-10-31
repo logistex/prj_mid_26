@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 APP = str(ROOT / "streamlit_app.py")
 TAB_KEY = "main_tabs"
 TEAM_TAB, PRACTICE_TAB = "팀 편성", "시나리오 실행"
-WARNING = "채점 프로그램이 이 앱을 조작하는 동안에는 이 탭을 쓰지 마십시오."
+WARNING = "채점하는 동안에는 이 탭을 쓰지 마십시오(채점 프로그램을 돌릴 때와 손으로 조작할 때 모두)."
 FIRST_SCREEN_KEYS = ("whoami", "result", "logout", "unassigned", "admin_roster_file", "admin_team_count", "admin_start",
                      "admin_close", "admin_assign", "assign_status", "proposal", "admin_confirm", "team_1", "team_2", "team_3")
 

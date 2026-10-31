@@ -15,7 +15,7 @@ from mp.roster import RosterError, parse_roster
 
 S = st.session_state
 VERDICT_COLOR = {"일치": "green", "불일치": "red", "비교 없음": "gray", "건너뜀": "gray"}
-WARNING = ("채점 프로그램이 이 앱을 조작하는 동안에는 이 탭을 쓰지 마십시오. "
+WARNING = ("채점하는 동안에는 이 탭을 쓰지 마십시오(채점 프로그램을 돌릴 때와 손으로 조작할 때 모두). "
            "\"시나리오 시작\"은 기존 팀, 지원, 투표를 모두 지웁니다.")
 STATE_KEYS = ("practice_units", "practice_records", "practice_selected", "practice_pending", "practice_running",
               "practice_errors")

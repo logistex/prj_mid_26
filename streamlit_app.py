@@ -10,6 +10,7 @@ import streamlit as st
 from mp import ai, rules, service
 from mp.config import ai_config, get_secret
 from mp.db import make_pool
+from mp.style import CSS
 
 st.set_page_config(page_title="팀 편성", page_icon="👥", layout="centered")
 
@@ -206,18 +207,22 @@ def main_view(user_id):
     )
 
     if user["is_admin"]:
-        st.subheader("명단 올리기")
-        st.file_uploader("명단 CSV", type="csv", key="admin_roster_file")
-        st.number_input("팀 수", min_value=1, value=3, step=1, key="admin_team_count")
-        st.button("명단으로 처음 상태 만들기", key="admin_start", on_click=on_start)
-        st.button("모집 마감", key="admin_close", on_click=on_close)
-        st.subheader("팀이 없는 학생")
-        with st.container(key="unassigned"):
-            if view["unassigned"]:
-                for m in view["unassigned"]:
-                    st.text(role_line(m))
-            else:
-                st.text("없음")
+        with st.container(border=True):
+            st.subheader("명단과 마감")
+            st.file_uploader("명단 CSV", type="csv", key="admin_roster_file")
+            st.number_input("팀 수", min_value=1, value=3, step=1, key="admin_team_count")
+            st.button("명단으로 처음 상태 만들기", key="admin_start", on_click=on_start)
+            st.caption("이 단추를 누르면 기존 팀, 지원, 투표, 학생 계정이 모두 지워지고 올린 명단으로 새로 만듦")
+            st.divider()
+            st.button("모집 마감", key="admin_close", on_click=on_close, type="primary")
+        with st.container(border=True):
+            st.subheader("팀이 없는 학생")
+            with st.container(key="unassigned"):
+                if view["unassigned"]:
+                    for m in view["unassigned"]:
+                        st.text(role_line(m))
+                else:
+                    st.text("없음")
     else:
         if my_team_id is None:
             st.info("아직 팀이 없음")
@@ -232,6 +237,7 @@ def main_view(user_id):
 
 
 st.title("팀 편성")
+st.html(CSS)  # 높이를 차지하지 않는 스타일 요소. fragment 밖에 있어 3초마다 다시 그려지지 않음
 
 # 로그인한 사용자는 세션에 저장해 둔 것을 씀(DB 왕복 0회). 계정이 사라진 경우는 main_view가 3초 안에 알아채 로그아웃함.
 # 관리자 기능은 이 값을 믿지 않고 서비스 함수가 DB의 is_admin으로 다시 확인함
@@ -306,24 +312,25 @@ def run_assignment(user, status_box):
 
 
 def admin_assign_area(user, assigning):
-    st.subheader("AI 배정")
-    st.button("AI 배정", key="admin_assign", on_click=on_assign, disabled=assigning)
     data = service.load_admin_page(get_read_pool())  # 질의 1개로 읽음
-    with st.container(key="assign_status"):
-        status_box = st.empty()
-        status_box.text("배정을 시작함" if assigning else data["assign_status"])
-    st.subheader("배정안")
-    with st.container(key="proposal"):
-        render_proposal(data["view"], data["proposal"])
-    st.button("배정안 확정", key="admin_confirm", on_click=on_confirm)
-    with st.expander("최근 AI 호출 기록 10건"):
-        if not data["logs"]:
-            st.text("기록 없음")
-        for row in data["logs"]:
-            st.text(f"{row['at']} · {row['attempt_no']}차 · {row['model']} · {row['outcome']} · {row['seconds']}초"
-                    + (f" · {row['detail']}" if row["detail"] else ""))
-    if assigning:
-        run_assignment(user, status_box)
+    with st.container(border=True):
+        st.subheader("AI 배정과 확정")
+        st.button("AI 배정", key="admin_assign", on_click=on_assign, disabled=assigning, type="primary")
+        with st.container(key="assign_status"):
+            status_box = st.empty()
+            status_box.text("배정을 시작함" if assigning else data["assign_status"])
+        st.markdown("**배정안**")
+        with st.container(key="proposal"):
+            render_proposal(data["view"], data["proposal"])
+        st.button("배정안 확정", key="admin_confirm", on_click=on_confirm, type="primary")
+        with st.expander("최근 AI 호출 기록 10건"):
+            if not data["logs"]:
+                st.text("기록 없음")
+            for row in data["logs"]:
+                st.text(f"{row['at']} · {row['attempt_no']}차 · {row['model']} · {row['outcome']} · {row['seconds']}초"
+                        + (f" · {row['detail']}" if row["detail"] else ""))
+        if assigning:
+            run_assignment(user, status_box)
 
 
 assigning = bool(st.session_state.pop("assigning", False))  # 중간에 끊겨도 다음 실행에서 배정이 다시 시작되지 않게 바로 지움

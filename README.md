@@ -4,7 +4,7 @@
 - 작성자: logistex
 - 하는 일: 관리자가 가상 명단(CSV)을 올려 팀을 만들고, 학생이 팀에 지원하고 팀원이 투표하며, 모집을 마감한 뒤 남은 학생을 AI가 배정하고 앱이 검사해 관리자가 확정함(중간과제 공고 2장)
 - 만든 것: Streamlit으로 만든 앱, Supabase(Postgres)에 만든 `tf_mp_` 테이블 8개
-- 가져다 쓴 것: DB 서비스 Supabase(6장 프로젝트를 다시 씀), AI 배정에 쓰는 OpenRouter 무료 모델 3개(README.md 4항)
+- 가져다 쓴 것: DB 서비스 Supabase(기존에 있던 recipe4fridge 프로젝트에 `tf_mp_` 테이블만 추가함), AI 배정에 쓰는 OpenRouter 무료 모델 3개(README.md 4항)
 - 이 문서는 중간과제 공고 7.1절(README.md 양식)의 7개 항목 순서로 씀. README.md의 5항, 6항, 7항은 사례마다 근거(화면, 커밋, 시나리오 단계)를 붙였음
 
 ## 1. 배포 주소

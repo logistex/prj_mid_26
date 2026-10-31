@@ -322,7 +322,9 @@ def admin_assign_area(user, assigning):
         st.markdown("**배정안**")
         with st.container(key="proposal"):
             render_proposal(data["view"], data["proposal"])
-        st.button("배정안 확정", key="admin_confirm", on_click=on_confirm, type="primary")
+        # 배정안이 없을 때와 AI 배정이 도는 동안에는 누르지 못하게 함: 채점 프로그램은 눌러지는 확정 단추를 배정안이 왔다는 신호로 씀
+        st.button("배정안 확정", key="admin_confirm", on_click=on_confirm, type="primary",
+                  disabled=assigning or not data["proposal"])
         with st.expander("최근 AI 호출 기록 10건"):
             if not data["logs"]:
                 st.text("기록 없음")

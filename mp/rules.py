@@ -89,6 +89,90 @@ def check_assignment(teams, unassigned, pairs):
     return None
 
 
+def assignment_checks(teams, unassigned, pairs):
+    """배정안 검사 5가지를 각각 따로 계산함(PRD_step4 3.4절). [{no, title, ok, detail}] 5개
+
+    check_assignment는 처음 어긴 1가지만 알려 주고, 이 함수는 5가지의 통과 여부를 모두 알려 줌.
+    check_assignment가 통과(None)이면 5가지 모두 통과이고, 그 반대도 같음
+    """
+    wanted = {s["student_no"] for s in unassigned}
+    by_no = {s["student_no"]: s for s in unassigned}
+    team_nos = {t["team_no"] for t in teams}
+    counts = {}
+    for student_no, _ in pairs:
+        counts[student_no] = counts.get(student_no, 0) + 1
+    assigned = set(counts)
+    out = []
+
+    def add(title, ok, detail):
+        out.append({"no": len(out) + 1, "title": title, "ok": ok, "detail": "통과" if ok else detail})
+
+    if assigned - wanted:
+        detail = "팀이 없는 학생이 아닌 학번이 들어 있음"
+    else:
+        detail = "배정되지 않은 학생이 있음"
+    add("팀이 없는 학생이 빠짐없이 배정되고, 그 밖의 학번은 없음", assigned == wanted, detail)
+    dup = [no for no, c in counts.items() if c > 1]
+    bad_team = sorted({team_no for _, team_no in pairs if team_no not in team_nos})
+    add("한 학생이 1번만 배정되고 팀 번호가 있는 팀임", not dup and not bad_team,
+        "한 학생이 두 번 이상 배정됨" if dup else "없는 팀 번호가 들어 있음")
+
+    grown = {t["team_no"]: list(t["members"]) for t in teams}
+    placed = set()
+    for student_no, team_no in pairs:  # 앞의 2가지를 어긴 배정은 5가지를 따로 보여 주기 위해 올바른 쌍만 얹음
+        if student_no in by_no and team_no in grown and student_no not in placed:
+            placed.add(student_no)
+            grown[team_no].append(by_no[student_no])
+
+    def first_bad(test, message):
+        for team_no in sorted(grown):
+            problem = test(grown[team_no])
+            if problem is not None:
+                return message(team_no, problem), False
+        return "", True
+
+    detail, ok = first_bad(lambda m: None if MIN_TEAM_SIZE <= len(m) <= MAX_TEAM_SIZE else len(m),
+                           lambda n, k: f"{_team_label(n)}의 인원이 {k}명임(2~4명이어야 함)")
+    add("배정한 뒤 모든 팀이 2~4명임", ok, detail)
+    detail, ok = first_bad(lambda m: True if len({x["main_role"] for x in m}) != len(m) else None,
+                           lambda n, _: f"{_team_label(n)}에 주 역할이 같은 학생이 있음")
+    add("팀 안에 주 역할이 같은 학생이 없음", ok, detail)
+    detail, ok = first_bad(lambda m: True if required_deficit(m) > 0 else None,
+                           lambda n, _: f"{_team_label(n)}에 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음")
+    add("모든 팀이 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 있음", ok, detail)
+    return out
+
+
+def final_state_checks(teams, unassigned):
+    """확정한 팀 구성의 규칙 확인 4가지(PRD_step4 3.4절). [{no, title, ok, detail}] 4개
+
+    teams: [{team_no, members:[학생 dict]}], unassigned: 팀이 없는 학생 목록
+    """
+    out = []
+
+    def add(title, ok, detail):
+        out.append({"no": len(out) + 1, "title": title, "ok": ok, "detail": "통과" if ok else detail})
+
+    def first_bad(test, message):
+        for t in sorted(teams, key=lambda t: t["team_no"]):
+            problem = test(t["members"])
+            if problem is not None:
+                return message(t["team_no"], problem), False
+        return "", True
+
+    add("모든 학생이 팀에 있음", not unassigned, f"팀이 없는 학생이 {len(unassigned)}명 남음")
+    detail, ok = first_bad(lambda m: None if MIN_TEAM_SIZE <= len(m) <= MAX_TEAM_SIZE else len(m),
+                           lambda n, k: f"{_team_label(n)}의 인원이 {k}명임(2~4명이어야 함)")
+    add("팀마다 2~4명임", ok, detail)
+    detail, ok = first_bad(lambda m: True if len({x["main_role"] for x in m}) != len(m) else None,
+                           lambda n, _: f"{_team_label(n)}에 주 역할이 같은 학생이 있음")
+    add("팀 안에 주 역할 중복이 없음", ok, detail)
+    detail, ok = first_bad(lambda m: True if required_deficit(m) > 0 else None,
+                           lambda n, _: f"{_team_label(n)}에 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음")
+    add("팀마다 필수 포함 역할(기획자, 웹 프로그래머)을 채움", ok, detail)
+    return out
+
+
 def find_assignment(teams, unassigned, time_limit=5.0):
     """규칙을 지키는 배정을 모든 경우를 따져 찾음(되돌아가기). (pairs 또는 None, 시간 초과 여부)
 

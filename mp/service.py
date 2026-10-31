@@ -81,6 +81,22 @@ def login(pool, student_no, password):
     return Result("승인", "로그인함"), row[0]
 
 
+def find_user_id(pool, student_no):
+    """학번으로 계정 id를 찾음. 없으면 None(연습 시나리오 실행기가 학생의 이름으로 지원과 투표를 부를 때 씀, PRD_step4)"""
+    with pool.connection() as conn:
+        row = conn.execute("select id from tf_mp_students where student_no = %s", (student_no,)).fetchone()
+    return row[0] if row else None
+
+
+def count_ai_calls_today(pool):
+    """UTC 하루(UTC 0시 이후)에 tf_mp_ai_logs에 기록된 AI 호출 수. 이 앱 밖의 호출은 모르므로 하한임(PRD_step4 7장)"""
+    with pool.connection() as conn:
+        return conn.execute(
+            "select count(*) from tf_mp_ai_logs"
+            " where created_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'"
+        ).fetchone()[0]
+
+
 def get_user(pool, user_id):
     with pool.connection() as conn:
         row = conn.execute(

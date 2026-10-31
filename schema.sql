@@ -2,8 +2,9 @@
 -- 팀 편성 앱의 테이블. 이름은 모두 tf_mp_로 시작함. 다시 실행해도 오류가 없음
 -- 1단계(학생, 팀, 팀원, 설정), 2단계(지원, 투표), 3단계(AI 호출 기록) 테이블
 --
--- RLS(행 수준 보안): 모든 테이블에서 켜고 정책을 만들지 않음. 앱은 DATABASE_URL로 소유자 역할에 직접 접속하므로
--- RLS의 영향을 받지 않고, Supabase의 anon, authenticated 역할(공개 API 키)로는 어떤 행도 읽거나 쓸 수 없음
+-- RLS(행 수준 보안): 모든 테이블에서 켜고 앱 전용 역할 tf_mp_app에만 모든 행을 허용하는 정책을 만듦(파일 끝).
+-- Supabase의 anon, authenticated 역할(공개 API 키)에는 정책이 없으므로 어떤 행도 읽거나 쓸 수 없음
+-- 앱은 DATABASE_URL로 tf_mp_app에 접속하고, 이 파일을 적용하는 일은 DATABASE_ADMIN_URL(큰 권한의 역할)로 함
 
 create table if not exists tf_mp_students (
   id            bigint generated always as identity primary key,
@@ -94,3 +95,42 @@ alter table tf_mp_ai_logs add column if not exists completion_tokens integer;
 alter table tf_mp_ai_logs add column if not exists reasoning_tokens integer;
 alter table tf_mp_ai_logs add column if not exists response_head text;
 alter table tf_mp_ai_logs enable row level security;
+
+-- 앱 전용 DB 역할(최소권한, docs/보안 점검.md 07번)
+-- 권한: public 스키마 USAGE, 위 8개 테이블의 SELECT, INSERT, UPDATE, DELETE, 그 테이블들의 시퀀스 USAGE와 SELECT뿐임
+-- CREATE 권한, 다른 테이블 권한, BYPASSRLS는 주지 않음. 비밀번호는 여기에 쓰지 않고 scripts/set_app_role_password.py가 정함
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'tf_mp_app') then
+    create role tf_mp_app login nosuperuser nocreatedb nocreaterole noinherit nobypassrls;
+  end if;
+end
+$$;
+
+alter role tf_mp_app nocreatedb nocreaterole nobypassrls;  -- NOSUPERUSER는 지정하지 않음(Supabase의 postgres는 슈퍼유저가 아니라 그 속성을 바꿀 수 없음. 새 역할은 기본이 슈퍼유저 아님)
+revoke create on schema public from tf_mp_app;
+grant usage on schema public to tf_mp_app;
+
+do $$
+declare
+  t text;
+  s text;
+begin
+  foreach t in array array['tf_mp_students','tf_mp_student_sub_roles','tf_mp_teams','tf_mp_members',
+                           'tf_mp_settings','tf_mp_applications','tf_mp_votes','tf_mp_ai_logs']
+  loop
+    execute format('grant select, insert, update, delete on public.%I to tf_mp_app', t);
+    execute format('drop policy if exists tf_mp_app_all on public.%I', t);
+    execute format('create policy tf_mp_app_all on public.%I for all to tf_mp_app using (true) with check (true)', t);
+    -- identity 열의 시퀀스(없는 테이블은 null)
+    for s in select pg_get_serial_sequence(format('public.%I', t), a.attname)
+             from pg_attribute a
+             where a.attrelid = format('public.%I', t)::regclass and a.attidentity <> '' and not a.attisdropped
+    loop
+      if s is not null then
+        execute format('grant usage, select on sequence %s to tf_mp_app', s);
+      end if;
+    end loop;
+  end loop;
+end
+$$;

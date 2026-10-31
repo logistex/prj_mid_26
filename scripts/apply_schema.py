@@ -1,5 +1,5 @@
 # 2026-10-30 21:58 KST
-"""schema.sql을 DB에 적용함. 비밀 값은 출력하지 않음"""
+"""schema.sql을 DB에 적용함. 역할과 권한을 만드는 일이라 큰 권한의 DATABASE_ADMIN_URL로 접속함(없으면 DATABASE_URL). 비밀 값은 출력하지 않음"""
 import sys
 from pathlib import Path
 
@@ -11,9 +11,9 @@ from mp.db import make_pool  # noqa: E402
 
 
 def main():
-    url = get_secret("DATABASE_URL")
+    url = get_secret("DATABASE_ADMIN_URL") or get_secret("DATABASE_URL")
     if not url:
-        print("DATABASE_URL 없음")
+        print("DATABASE_ADMIN_URL과 DATABASE_URL이 모두 없음")
         return 1
     sql = (ROOT / "schema.sql").read_text(encoding="utf-8")
     try:

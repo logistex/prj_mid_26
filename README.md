@@ -23,7 +23,7 @@ PRD는 4단계로 나눠 썼음. 4단계는 연습 시나리오 실행 탭임.
 | [docs/PRD_step3.md](docs/PRD_step3.md) | 3단계: AI 배정, 배정안 검사, 확정, 실패 처리 |
 | [docs/PRD_step4.md](docs/PRD_step4.md) | 4단계: 연습 시나리오 실행 탭(단계표 CSV를 1개씩 실행하고 이전과 이후 배정 현황을 비교) |
 | [docs/구현 계획.md](docs/구현%20계획.md) | 작업 순서와 검증 방법, 감점 점검표 |
-| [docs/보안 점검.md](docs/보안%20점검.md) | 배포 전 보안 진단 15개 항목(진단만 하고 고치지 않음) |
+| [docs/보안 점검.md](docs/보안%20점검.md) | 배포 전 보안 진단 15개 항목(07 최소권한만 고쳤고 나머지는 진단만 함) |
 
 그 밖의 구성은 다음과 같음.
 
@@ -32,6 +32,11 @@ PRD는 4단계로 나눠 썼음. 4단계는 연습 시나리오 실행 탭임.
 - 단계표 CSV(`tests/data/*_단계.csv`)의 기대 결과 가운데 중간 동작(예: 투표가 필요한 지원은 먼저 "대기")은 공고에 직접 적힌 값이 아니라 공고의 규칙에서 풀이한 값임. 공고에 적힌 것은 단계의 최종 결과임
 - `schema.sql`: `tf_mp_` 테이블과 제약. `tests/`: 시험과 연습용 CSV(`tests/data/`)
 - `.env.example`: 값 없는 견본. 키와 관리자 비밀번호는 `.env`나 Streamlit Secrets에만 두고 저장소에는 없음
+- 자기 Supabase DB에서 따라 하는 순서(앱은 `tf_mp_` 테이블 8개만 다루는 전용 역할 `tf_mp_app`으로 접속함):
+  1. `.env.example`을 `.env`로 복사하고, `DATABASE_ADMIN_URL`에 Supabase 연결 풀러 주소(포트 6543, 사용자 `postgres.<프로젝트 번호>`)를 넣고, `OPENROUTER_API_KEY`와 `ADMIN_PASSWORD`를 채움. `DATABASE_URL`은 비워 둠
+  2. `python scripts/apply_schema.py`: `schema.sql`을 `DATABASE_ADMIN_URL`로 적용해 `tf_mp_` 테이블과 `tf_mp_app` 역할(비밀번호 없음), 권한, RLS 정책을 만듦
+  3. `python scripts/set_app_role_password.py`: `tf_mp_app`의 비밀번호를 무작위로 정하고 `.env`의 `DATABASE_URL`을 `tf_mp_app.<프로젝트 번호>` 주소로 채움. 아무것도 출력하지 않으며 다시 실행하면 비밀번호가 바뀜
+  4. 앱, keepalive, 시험은 `DATABASE_URL`만 씀. `DATABASE_ADMIN_URL`은 로컬 `.env`에만 두고 Streamlit Secrets와 GitHub Secrets에는 넣지 않음. 두 곳에는 `.env`의 `DATABASE_URL` 값을 넣음
 
 ## 3. 고른 해결 방법
 
@@ -118,7 +123,9 @@ PRD는 4단계로 나눠 썼음. 4단계는 연습 시나리오 실행 탭임.
 - 개선: 응답이 빨랐던 cohere를 1차로 올리고 nemotron-3-ultra를 2차로 내렸음(커밋 `c678a56`)
 - 확인하지 못한 것: 순서를 바꾼 뒤의 효과를 실제 모델 호출로 확인하지 않았음(하루 호출 한도를 아끼려고). 표본도 시나리오마다 1번뿐임
 
-### 문제 3: 앱이 쓰는 DB 접속 권한이 넓음 (보안 점검 07 최소권한, High, 보류)
+### 문제 3: 앱이 쓰는 DB 접속 권한이 넓었음 (보안 점검 07 최소권한, High, 해결함)
 
-- 앱이 쓰는 DB 역할이 같은 DB에 있는 다른 앱의 테이블 20개까지 지울 수 있음(`docs/보안 점검.md` 07번). 접속 정보가 유출되거나 나중에 버그가 생기면 영향이 큼
-- 전용 DB 역할을 만들면 새 비밀번호가 생기고 접속 주소를 3곳(로컬, Streamlit, GitHub)에서 바꿔야 하며, 같은 DB를 쓰는 다른 앱과도 맞춰야 해서 보류했음. 코드는 고치지 않음
+- 원래 앱이 쓰는 DB 역할(`postgres`)이 같은 DB에 있는 다른 앱의 테이블 20개까지 지울 수 있었음(`docs/보안 점검.md` 07번). 접속 정보가 유출되거나 나중에 버그가 생기면 영향이 컸음
+- 고친 것(2026-10-31): `schema.sql` 끝에 전용 역할 `tf_mp_app`을 더함. `NOSUPERUSER`, `NOBYPASSRLS`이고 public 스키마 `USAGE`, `tf_mp_` 테이블 8개의 `SELECT`·`INSERT`·`UPDATE`·`DELETE`, 그 시퀀스의 `USAGE`·`SELECT`만 가짐. RLS는 켠 채로 이 역할에만 모든 행을 허용함. `scripts/set_app_role_password.py`가 비밀번호를 무작위로 정해 `.env`의 `DATABASE_URL`을 이 역할의 주소로 바꾸고, 이전 주소는 `DATABASE_ADMIN_URL`로 남겨 `scripts/apply_schema.py`처럼 큰 권한이 필요한 일에만 씀. 순서는 이 문서 2항의 마지막 목록에 있음
+- 확인(기록 세션이 확인한 것을 옮김): `tf_mp_app`으로 `tf_mp_` 테이블 읽기와 쓰기는 되고, 다른 앱 테이블 `DELETE`와 `CREATE TABLE`은 거부됨. Streamlit Secrets와 GitHub Secrets를 새 주소로 바꾼 뒤 배포한 앱이 `tf_mp_app`으로 접속하고 keepalive가 성공함
+- 남은 것: keepalive도 쓰기 권한이 있는 `tf_mp_app`을 씀(읽기만 되는 역할은 따로 두지 않았음)

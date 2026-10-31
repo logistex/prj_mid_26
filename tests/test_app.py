@@ -6,7 +6,7 @@
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from conftest import DATA, ROOT
+from conftest import DATA, ROOT, plain
 from mp import service
 from mp.config import get_secret
 from mp.db import make_pool
@@ -43,7 +43,7 @@ def login(at, student_no, password):
 
 
 def result_text(at):
-    return " ".join(e.value for e in at.text if e.value.startswith(("승인", "대기", "거절", "막힘")))
+    return " ".join(plain(e.value) for e in at.get_by_key("result").markdown)
 
 
 def all_text(at):

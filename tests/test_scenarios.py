@@ -14,7 +14,7 @@ import os
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from conftest import DATA, ROOT
+from conftest import DATA, ROOT, plain
 from fake_openrouter import FakeOpenRouter
 from mp import rules
 from mp import service
@@ -43,7 +43,7 @@ class Session:
         assert self.result().startswith("승인"), f"{student_no} 로그인 실패: {self.result()}"
 
     def result(self):
-        return " ".join(e.value for e in self.at.get_by_key("result").text)
+        return " ".join(plain(e.value) for e in self.at.get_by_key("result").markdown)
 
     def press(self, key):
         """(결과 안내, 단추가 없었는지). 단추가 없으면 공고 2.7절에 따라 막힘으로 봄"""
@@ -303,8 +303,8 @@ def test_final_stage_with_failing_fake_ai_app_assigns_by_itself(name, fake_ai):
     assert [m for m, _ in fake_ai.requests] == ["fake/slow:free", "fake/limited:free", "fake/empty:free"]
     # 확정한 뒤 새 브라우저로 열어도 팀 구성이 그대로임
     fresh = Session(str(base + 1))
-    text = " ".join(e.value for e in fresh.at.text)
-    assert "(내 팀)" in text
+    text = " ".join(e.value for e in fresh.at.markdown)
+    assert ":blue-badge[내 팀]" in text
     assert not fresh.at.exception
 
 

@@ -2,3 +2,19 @@
 # 오류가 나도 화면에 예외 내용(접속 정보가 섞일 수 있음)이 나오지 않게 함
 [client]
 showErrorDetails = "type"
+
+# 디자인 1차(2026-10-31): 글자색과 바탕색의 대비는 4.5:1 이상으로 정함. 색만으로 뜻을 전하지 않고 글의 첫 단어를 그대로 둠
+[theme]
+base = "light"
+primaryColor = "#2457c5"
+backgroundColor = "#f7f9fc"
+secondaryBackgroundColor = "#e8eef7"
+textColor = "#1f2933"
+baseRadius = "large"
+buttonRadius = "medium"
+borderColor = "#c9d3e3"
+greenTextColor = "#17692e"
+blueTextColor = "#1d4ed8"
+orangeTextColor = "#9a4a00"
+redTextColor = "#b42318"
+grayTextColor = "#4b5563"

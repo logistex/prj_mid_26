@@ -11,10 +11,17 @@ from mp import ai, rules, service
 from mp.config import ai_config, get_secret
 from mp.db import make_pool
 
-st.set_page_config(page_title="팀 편성", layout="centered")
+st.set_page_config(page_title="팀 편성", page_icon="👥", layout="centered")
 
 REFRESH_INTERVAL = "3s"  # 공고 2.7절: 다른 사람의 변경을 5초 이하의 간격으로 다시 그림
 PHASE_LABEL = {None: "명단이 올라오지 않음", "open": "모집 중", "closed": "모집 마감", "confirmed": "배정 확정"}
+# result 안내의 첫 단어(공고 2.7절)별 글자색. 색은 첫 단어에만 입히고 글은 바꾸지 않음
+RESULT_COLOR = {"승인": "green", "대기": "blue", "거절": "orange", "막힘": "red"}
+
+
+def md(text):
+    """학생 이름과 안내 글을 마크다운에 넣을 때 서식으로 읽히는 기호를 글자 그대로 보이게 함"""
+    return "".join("\\" + c if c in "\\`*_[]<>~$:" else c for c in str(text))
 
 
 @st.cache_resource
@@ -123,29 +130,45 @@ def role_line(person):
     return line
 
 
+def role_line_md(person):
+    """role_line과 같은 내용을 위계를 두어 보여 줌: 이름과 주 역할은 굵게, 보조 역할은 보조 글씨"""
+    line = f"**{md(person['name'])}** · {md(person['main_role'])}"
+    if person["sub_roles"]:
+        line += f" :gray[(보조: {md(', '.join(person['sub_roles']))})]"
+    return line
+
+
 def render_result():
     with st.container(key="result"):
-        if st.session_state.get("last_result"):
-            st.text(st.session_state["last_result"])
+        text = st.session_state.get("last_result")
+        if not text:
+            return
+        head = text.split(":", 1)[0].strip()
+        if head in RESULT_COLOR:
+            # 렌더링된 글은 "승인: …"처럼 첫 단어가 그대로임. 색과 굵기만 입힘
+            st.markdown(f":{RESULT_COLOR[head]}[**{head}**]{md(text[len(head):])}")
+        else:
+            st.markdown(md(text))
 
 
 def render_team(team, user, my_team_id, my_pending, phase):
     """팀 하나: 팀 이름, 인원, 팀원, 대기 지원. 지원 단추와 (팀원에게만) 투표 단추를 함께 그림"""
     is_member = team["id"] == my_team_id
     with st.container(key=f"team_{team['team_no']}", border=True):
-        st.text(f"{team['name']}{' (내 팀)' if is_member else ''} · {len(team['members'])}/4")
+        st.markdown(f"**{md(team['name'])}**{' :blue-badge[내 팀]' if is_member else ''}"
+                    f" :gray[· {len(team['members'])}/4]")
         if team["members"]:
             for m in team["members"]:
-                st.text(role_line(m))
+                st.markdown(role_line_md(m))
         else:
-            st.text("팀원 없음")
+            st.caption("팀원 없음")
 
         for p in team["pending"]:
             yes = sum(1 for v in p["votes"].values() if v == "찬성")
-            st.text(f"대기 지원: {role_line(p)} (찬성 {yes}/{len(team['members'])})")
+            st.markdown(f":orange[**대기 지원**] {role_line_md(p)} :gray[(찬성 {yes}/{len(team['members'])})]")
             if is_member:
                 if user["id"] in p["votes"]:
-                    st.text(f"내 투표: {p['votes'][user['id']]}")
+                    st.markdown(f"내 투표: **{md(p['votes'][user['id']])}**")
                 else:
                     c1, c2 = st.columns(2)
                     c1.button("찬성", key=f"vote_yes_{p['student_no']}", on_click=on_vote,
@@ -173,7 +196,7 @@ def main_view(user_id):
         st.rerun()
 
     phase = view["phase"]
-    st.text(f"상태: {PHASE_LABEL.get(phase, phase)}")
+    st.markdown(f"상태: **{md(PHASE_LABEL.get(phase, phase))}**")
 
     my_team_id = next(
         (t["id"] for t in view["teams"] if any(m["id"] == user["id"] for m in t["members"])), None
@@ -199,7 +222,7 @@ def main_view(user_id):
         if my_team_id is None:
             st.info("아직 팀이 없음")
         if my_pending:
-            st.text(f"내 지원: {my_pending[0]['name']}에서 대기 중")
+            st.markdown(f"내 지원: **{md(my_pending[0]['name'])}**에서 대기 중")
 
     st.subheader("팀 목록")
     if not view["teams"]:

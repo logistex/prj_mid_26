@@ -7,7 +7,15 @@ sys.path.insert(0, str(ROOT))
 DATA = ROOT / "tests" / "data"
 
 
+import re  # noqa: E402
+
 import pytest  # noqa: E402
+
+
+def plain(markdown_value):
+    """AppTest가 돌려주는 마크다운 원문(:green[**승인**]: …)을 화면에 보이는 글(승인: …)로 바꿈"""
+    text = re.sub(r":(?:green|blue|orange|red|gray)\[\*\*(.+?)\*\*\]", r"\1", str(markdown_value))
+    return re.sub(r"\\(.)", r"\1", text)
 
 
 @pytest.fixture(scope="session", autouse=True)

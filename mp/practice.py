@@ -7,7 +7,8 @@
 import copy
 import csv
 import io
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 STATUSES = ("승인", "대기", "거절", "막힘")
 ACTIONS = ("지원", "투표", "마감", "배정", "확정")
@@ -324,6 +325,181 @@ def apply_proposal(view, pairs):
         teams[team_no]["members"].append(student)
     out["unassigned"] = list(waiting.values())
     return out
+
+
+# ---- 시간 줄과 상황 설명(PRD_step4 4.2절) ----
+
+_FINAL_BY_DIGIT = {"0": True, "1": True, "2": False, "3": True, "4": False, "5": False, "6": True, "7": True, "8": True, "9": False}
+
+
+def short_name(name):
+    """명단의 이름 끝에 붙은 괄호(예: 이름(역할 약자))를 떼어 시간 줄과 설명에 짧게 씀. 괄호가 없으면 그대로임"""
+    text = re.sub(r"\s*\([^()]*\)\s*$", "", str(name)).strip()
+    return text or str(name)
+
+
+def has_final(text):
+    """마지막 글자에 받침이 있으면 True, 없으면 False, 알 수 없으면 None(한글과 숫자만 앎)"""
+    last = str(text)[-1:]
+    if not last:
+        return None
+    if "가" <= last <= "힣":
+        return (ord(last) - ord("가")) % 28 != 0
+    return _FINAL_BY_DIGIT.get(last)
+
+
+def josa(text, with_final, without_final):
+    final = has_final(text)
+    if final is None:
+        return f"{text}{with_final}({without_final})"
+    return text + (with_final if final else without_final)
+
+
+def subject(text):
+    return josa(text, "이", "가")
+
+
+def topic(text):
+    return josa(text, "은", "는")
+
+
+@dataclass
+class Outcome:
+    """하위 단계 안에서 일어난 지원 1건의 경과. 실제 실행 결과(기록)로만 채움"""
+    student_no: str
+    team_no: int
+    status: str
+    applied: bool
+    first_status: str = ""
+    first_message: str = ""
+    votes: list = field(default_factory=list)
+
+
+def application_outcomes(rows, record_rows):
+    """하위 단계의 행과 그 실행 기록(rows)에서 지원마다 경과를 모음. 건너뛴 행과 막힌 투표는 넣지 않음"""
+    outcomes = {}
+    for row, rr in zip(rows, record_rows):
+        if rr.get("skipped"):
+            continue
+        if row.action == "지원":
+            outcomes[row.actor] = Outcome(row.actor, row.team_no, rr["status"], True, rr["status"], rr["message"])
+        elif row.action == "투표":
+            if rr["status"] == "막힘":
+                continue
+            o = outcomes.get(row.target)
+            if o is None:
+                o = outcomes[row.target] = Outcome(row.target, None, "", False)
+            o.votes.append((row.actor, row.choice))
+            o.status = rr["status"]
+    return list(outcomes.values())
+
+
+def summarize_unit(unit, name_of):
+    """시간 줄의 한 줄 요약. 예: 학생7이 팀1에 지원, 학생1 찬성, 학생4 거부"""
+    kind = unit.kind
+    if kind == "마감":
+        return "모집 마감"
+    if kind == "배정":
+        return "AI 배정"
+    if kind == "확정":
+        return "배정 확정"
+    applied = {r.actor for r in unit.rows if r.action == "지원"}
+    parts = []
+    for r in unit.rows:
+        if r.action == "지원":
+            parts.append(f"{subject(name_of(r.actor))} 팀{r.team_no}에 지원")
+        elif r.target in applied:
+            parts.append(f"{name_of(r.actor)} {r.choice}")
+        else:
+            parts.append(f"{subject(name_of(r.actor))} {name_of(r.target)}에 {r.choice}")
+    return ", ".join(parts)
+
+
+def unit_result(unit, record):
+    """시간 줄의 결과 배지: 건너뛰지 않은 마지막 행의 실제 결과. 모두 건너뛰었으면 건너뜀"""
+    statuses = [rr["status"] for rr in record.get("rows", []) if not rr.get("skipped")]
+    return statuses[-1] if statuses else "건너뜀"
+
+
+def team_of(view, student_no):
+    """학생의 대기 지원이나 팀원 자리가 있는 팀 번호. 없으면 None"""
+    for t in view["teams"]:
+        if any(p["student_no"] == student_no for p in t["pending"]) or any(m["student_no"] == student_no for m in t["members"]):
+            return t["team_no"]
+    return None
+
+
+def narrate(unit, record, name_of):
+    """그 단계에서 일어난 일을 한 문장으로. 실제 실행 결과(기록)와 전후 상태로만 씀"""
+    rrs = record.get("rows", [])
+    if unit.kind != "지원과 투표":
+        head = {"마감": "모집 마감", "배정": "AI 배정", "확정": "배정 확정"}[unit.kind]
+        rr = rrs[0] if rrs else {"status": "", "message": ""}
+        return f"{head} → {rr['status']}: {rr['message']}"
+    before, after = record["before"], record["after"]
+    changes = diff_views(before, after)
+    team_changed = {c.team_no for c in changes if c.kind in ("새 팀원", "빠진 팀원")}
+    size_before = {t["team_no"]: len(t["members"]) for t in before["teams"]}
+    sentences = []
+    for o in application_outcomes(unit.rows, rrs):
+        who = name_of(o.student_no)
+        team_no = o.team_no or team_of(before, o.student_no) or team_of(after, o.student_no)
+        seq = []
+        if o.applied:
+            seq.append(f"{subject(who)} 팀{o.team_no}에 지원함")
+            if o.first_status == "막힘":
+                seq.append(f"막힘: {o.first_message}")
+            elif o.first_status == "승인":
+                seq.append("바로 승인되어 팀원이 됨")
+            elif o.first_status == "대기":
+                seq.append(f"팀원 {size_before.get(o.team_no, 0)}명의 투표를 기다림")
+        elif o.votes:
+            seq.append(f"{topic(who)} 팀{team_no}에 낸 지원에 투표가 있었음")
+        if o.votes:
+            seq.append(", ".join(f"{name_of(v)} {c}" for v, c in o.votes))
+            if o.status == "승인":
+                seq.append(f"승인. {subject(who)} 팀{team_no}의 팀원이 됨")
+            elif o.status == "거절":
+                kept = f"{topic(f'팀{team_no}')} 그대로이고 " if team_no not in team_changed else ""
+                seq.append(f"거절. {kept}{topic(who)} 팀이 없는 학생으로 돌아감")
+            else:
+                seq.append("아직 결과가 나지 않음")
+        sentences.append(" → ".join(seq))
+    return " / ".join(sentences) if sentences else "일어난 일이 없음"
+
+
+@dataclass(frozen=True)
+class Progress:
+    total: int
+    done: int
+    partial: int = None
+
+
+def progress(units, states):
+    """단계표의 단계(step) 번호 기준 진행. 하위 단계가 모두 실행된 단계만 끝난 것으로 셈"""
+    steps = list(dict.fromkeys(u.step for u in units))
+    done, partial = 0, None
+    for s in steps:
+        mine = [st_ for u, st_ in zip(units, states) if u.step == s]
+        if all(x == "실행함" for x in mine):
+            done += 1
+        elif any(x == "실행함" for x in mine):
+            partial = s
+    return Progress(len(steps), done, partial)
+
+
+def progress_text(p):
+    text = f"{p.total}단계 가운데 {p.done}단계까지 실행함"
+    return text + (f"({p.partial}단계는 일부만 실행함)" if p.partial is not None else "")
+
+
+def scenario_title(filename):
+    """올린 단계표 파일 이름에서 시나리오 이름을 만듦. 파일 이름에서 확장자와 끝의 단계 낱말을 뗌"""
+    stem = str(filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if stem.lower().endswith(".csv"):
+        stem = stem[:-4]
+    stem = re.sub(r"[\s_-]*단계$", "", stem).strip()
+    return f"{stem} 시나리오" if stem else "시나리오"
 
 
 # ---- AI 호출 한도 ----

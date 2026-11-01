@@ -1,24 +1,27 @@
 # 2026-10-31 13:07 KST
 """연습 시나리오 실행 화면(PRD_step4). 기본 화면의 "시나리오 실행" 탭에 그려짐(관리자만). 관리자가 명단 CSV와 단계표 CSV를 올리면
-단계표의 동작을 지금 있는 서비스 함수로 1개씩 실행하고, 실행 전과 후의 팀 배정 현황을 나란히 보여 줌.
-좌측은 시나리오(하위 단계 목록), 우측은 선택한 하위 단계의 이전과 이후
+단계표의 동작을 지금 있는 서비스 함수로 1개씩 실행하고, 그 단계에서 지원, 투표, 배정이 어떻게 바뀌었는지 보여 줌.
+좌측은 단계를 시간 순서로 늘어놓은 줄(번호, 한 줄 요약, 결과 배지), 우측은 고른 단계의 상황: 일어난 일 한 문장, 기대와 실제 결과,
+이전과 이후를 한 판에 겹쳐 바뀐 것만 표시한 팀 카드(mp/practice_board.py)
 
 공고 2.7절의 key를 쓰는 "팀 편성" 탭과 섞이지 않게, 이 화면의 key는 모두 practice_로 시작함.
 저장한 기록은 세션 상태에만 둠(PRD_step4 3.7절). 이 화면에는 어떤 시나리오의 학번, 이름, 단계 번호도 쓰지 않음
 """
 import streamlit as st
 
-from mp import ai, practice, practice_run, rules, service
+from mp import ai, practice, practice_board, practice_run, rules, service
 from mp.config import ai_config, get_secret
 from mp.practice import md_escape as md
 from mp.roster import RosterError, parse_roster
+from mp.style import PRACTICE_CSS
 
 S = st.session_state
 VERDICT_COLOR = {"일치": "green", "불일치": "red", "비교 없음": "gray", "건너뜀": "gray"}
+STATUS_COLOR = {"승인": "green", "거절": "red", "대기": "orange", "막힘": "gray", "건너뜀": "gray", "오류": "red"}
 WARNING = ("채점하는 동안에는 이 탭을 쓰지 마십시오(채점 프로그램을 돌릴 때와 손으로 조작할 때 모두). "
            "\"시나리오 시작\"은 기존 팀, 지원, 투표를 모두 지웁니다.")
 STATE_KEYS = ("practice_units", "practice_records", "practice_selected", "practice_pending", "practice_running",
-              "practice_errors")
+              "practice_errors", "practice_names", "practice_title")
 _pool = None  # render가 받은 연결 풀. 기본 화면이 만든 풀을 함께 씀(프로세스 안에서 하나뿐이므로 세션이 달라도 같음)
 
 
@@ -63,12 +66,16 @@ def on_start():
         S.pop(key, None)
     S["practice_units"] = practice.split_units(rows)
     S["practice_records"] = {}
+    S["practice_names"] = {s["student_no"]: practice.short_name(s["name"]) for s in students}
+    S["practice_title"] = practice.scenario_title(getattr(steps_file, "name", ""))
 
 
-def on_unit(label, state):
+def on_step(label):
     S["practice_selected"] = label
-    if state == "다음 차례":
-        S["practice_pending"] = label
+
+
+def on_run(label):
+    S["practice_pending"] = label
 
 
 # ---- 화면 조각 ----
@@ -122,45 +129,100 @@ def render_checks(title, checks):
         st.markdown(f"{c['no']}. {mark} {md(c['title'])}{detail}")
 
 
-def render_record(unit, record, previous, units):
-    st.subheader(f"하위 단계 {unit.label} · {unit.kind} · 이전 → 이후")
+def badge(text):
+    return f":{STATUS_COLOR.get(text, 'gray')}-badge[{text}]"
+
+
+def collect_names(records):
+    """이름 목록. 올린 명단의 이름을 먼저 쓰고, 없으면 기록 속 상태에서 읽음"""
+    names = {}
+    for rec in records.values():
+        for view in (rec.get("before"), rec.get("after")):
+            if not view:
+                continue
+            for team in view["teams"]:
+                for person in [*team["members"], *team["pending"]]:
+                    names[person["student_no"]] = practice.short_name(person["name"])
+            for person in view["unassigned"]:
+                names[person["student_no"]] = practice.short_name(person["name"])
+    names.update(S.get("practice_names", {}))
+    return names
+
+
+def render_step_row(unit, state, record, selected, busy, name_of):
+    """시간 줄의 한 칸: 번호, 한 줄 요약, 결과 배지. 실행한 단계만 누를 수 있음"""
+    mode = "sel" if selected else {"실행함": "done", "다음 차례": "next", "대기": "wait", "중단됨": "stop"}[state]
+    with st.container(key=f"practice_row_{mode}_{unit.key}"):
+        st.button(f"**{unit.label}** · {md(practice.summarize_unit(unit, name_of))}", key=f"practice_step_{unit.key}",
+                  on_click=on_step, args=(unit.label,), disabled=busy or state != "실행함", width="stretch", wrap=True)
+        if state == "실행함":
+            line = badge(practice.unit_result(unit, record))
+            if record.get("ai") is not None:
+                line += " :gray[실제 모델 호출함]" if record["ai"]["calls_models"] else " :gray[모델 호출 없음]"
+            if selected:
+                line += " :blue[보는 중]"
+        elif state == "다음 차례":
+            line = ":blue-badge[다음 차례]"
+        elif state == "중단됨":
+            line = ":red-badge[중단됨] :gray[이 단계부터 다시 시작해야 함]"
+        else:
+            line = ":gray[실행 전]"
+        st.markdown(line)
+
+
+def render_verdict(unit, record):
+    verdicts = practice.verdicts(unit.rows, record)
+    expected = ", ".join(r.expected for r in unit.rows if r.expected) or "없음"
+    actual = ", ".join(rr["status"] for rr in record["rows"])
+    verdict = practice.judge_unit(verdicts)
+    with st.container(key="practice_verdict"):
+        st.markdown(f"기대 결과 **{md(expected)}** · 실제 결과 **{md(actual)}** · :{VERDICT_COLOR[verdict]}-badge[{verdict}]")
+
+
+def render_record(unit, record, previous, name_of):
+    st.markdown(f"**{md(practice.narrate(unit, record, name_of))}**")
     if record.get("error"):
         st.error(f"실행 중 오류({record['error']}). 이 하위 단계부터 다시 시작해야 함")
     if previous is not None and practice.is_discontinuous(previous, record):
         st.warning("이전 상태가 앞 단계의 이후 상태와 다름: 다른 곳에서 DB가 바뀌었을 수 있음")
+    render_verdict(unit, record)
+    part = record.get("ai")
+    if part is not None:
+        with st.container(key="practice_checks"):
+            st.markdown("**배정안의 출처** " + (md(part["source"]) if part["source"] else ":gray[배정안 없음]")
+                        + (" :red[(실제 모델 호출)]" if part["calls_models"] else " :gray[(모델 호출 없음)]"))
+            if part["checks"]:
+                render_checks("검사 5가지", part["checks"])
+            if part["lines"]:
+                st.markdown("**진행 안내(실패한 모델의 기록)**")
+                for line in part["lines"]:
+                    st.text(line)
+    if record.get("final_checks"):
+        with st.container(key="practice_checks"):
+            render_checks("규칙 확인", record["final_checks"])
     changes = practice.diff_views(record["before"], record["after"])
-    c_before, c_after = st.columns(2)
-    with c_before:
-        st.markdown("**이전**" + (" (마감 뒤)" if unit.kind == "배정" else ""))
-        with st.container(key="practice_before"):
-            render_view(record["before"], changes, "before")
-    with c_after:
-        st.markdown("**이후**" + (" (배정안)" if unit.kind == "배정" else " (확정한 최종 팀)" if unit.kind == "확정" else ""))
-        with st.container(key="practice_after"):
-            render_view(record["after"], changes, "after")
-        part = record.get("ai")
-        if part is not None:
-            with st.container(key="practice_checks"):
-                st.markdown("**배정안의 출처** " + (md(part["source"]) if part["source"] else ":gray[배정안 없음]")
-                            + (" :red[(실제 모델 호출)]" if part["calls_models"] else " :gray[(모델 호출 없음)]"))
-                if part["checks"]:
-                    render_checks("검사 5가지", part["checks"])
-                if part["lines"]:
-                    st.markdown("**진행 안내(실패한 모델의 기록)**")
-                    for line in part["lines"]:
-                        st.text(line)
-        if record.get("final_checks"):
-            with st.container(key="practice_checks"):
-                render_checks("규칙 확인", record["final_checks"])
-    with st.container(key="practice_summary"):
-        st.markdown("**변화 요약**")
-        if not changes:
-            st.caption("바뀐 것 없음")
-        for c in changes:
-            where = f"팀{c.team_no}" if c.team_no else "-"
-            detail = f" · {md(c.detail)}" if c.detail else ""
-            who = f" · {md(c.name)}" if c.name else ""
-            st.markdown(f"- {c.kind} · {where}{who}{detail}")
+    st.toggle("이전 상태도 나란히 보기", key="practice_show_before")
+    with st.container(key="practice_board"):
+        st.html(practice_board.board_html(practice_board.build_board(record["before"], record["after"], unit.rows, record["rows"])))
+    if S.get("practice_show_before"):
+        c_before, c_after = st.columns(2)
+        with c_before:
+            st.markdown("**이전**" + (" (마감 뒤)" if unit.kind == "배정" else ""))
+            with st.container(key="practice_before"):
+                render_view(record["before"], changes, "before")
+        with c_after:
+            st.markdown("**이후**" + (" (배정안)" if unit.kind == "배정" else " (확정한 최종 팀)" if unit.kind == "확정" else ""))
+            with st.container(key="practice_after"):
+                render_view(record["after"], changes, "after")
+    with st.expander("바뀐 것 목록"):
+        with st.container(key="practice_summary"):
+            if not changes:
+                st.caption("바뀐 것 없음")
+            for c in changes:
+                where = f"팀{c.team_no}" if c.team_no else "-"
+                detail = f" · {md(c.detail)}" if c.detail else ""
+                who = f" · {md(c.name)}" if c.name else ""
+                st.markdown(f"- {c.kind} · {where}{who}{detail}")
     verdicts = practice.verdicts(unit.rows, record)
     with st.expander("행별 결과"):
         for row, rr, v in zip(unit.rows, record["rows"], verdicts):
@@ -212,29 +274,6 @@ def ai_box():
     return on
 
 
-def render_unit_row(unit, state, record, busy, selected):
-    with st.container(border=True, key=f"practice_row_{unit.key}"):
-        note = f" · {md(unit.note)}" if unit.note else ""
-        st.markdown(f"{'▶ ' if selected else ''}**{unit.label}** · {md(unit.kind)}{note}")
-        if state == "실행함":
-            vs = practice.verdicts(unit.rows, record)
-            expected = ", ".join(r.expected for r in unit.rows if r.expected) or "없음"
-            actual = ", ".join(rr["status"] for rr in record["rows"])
-            unit_verdict = practice.judge_unit(vs)
-            st.markdown(f":gray[기대 {md(expected)} → 실제 {md(actual)}] · 판정 :{VERDICT_COLOR[unit_verdict]}[{unit_verdict}]")
-            if record.get("ai"):
-                st.caption("실제 모델 호출함" if record["ai"]["calls_models"] else "모델 호출 없음(앱이 직접 배정)")
-        elif state == "중단됨":
-            st.markdown(":red[중단됨: 이 하위 단계부터 다시 시작해야 함]")
-        label = {"실행함": "보기", "다음 차례": "실행", "대기": "대기", "중단됨": "중단됨"}[state]
-        if unit.kind == "배정" and state == "다음 차례":
-            on = ai_box()
-            label = "실행(실제 모델 호출)" if on else "실행(앱이 직접 배정)"
-        st.button(label, key=f"practice_run_{unit.key}", on_click=on_unit, args=(unit.label, state),
-                  disabled=busy or state in ("대기", "중단됨"),
-                  type="primary" if state == "다음 차례" else "secondary")
-
-
 def build_plan(unit, status_box):
     """배정 하위 단계의 AiPlan. 토글이 꺼져 있으면 모델 없이 앱이 직접 배정함. 모델을 부를 수 없으면 None"""
     if unit.kind != "배정":
@@ -254,7 +293,7 @@ def build_plan(unit, status_box):
 
 def run_pending(unit, records):
     S.pop("practice_pending", None)
-    st.subheader(f"하위 단계 {unit.label} · {unit.kind} · 실행 중")
+    st.subheader(f"{unit.label}단계를 실행하는 중")
     status_box = st.empty()
     plan = build_plan(unit, status_box)
     if plan is None:
@@ -286,6 +325,7 @@ def render(pool, user):
     if not user["is_admin"]:  # 기본 화면이 관리자에게만 이 탭을 그리지만, 여기서도 다시 막음
         st.error("관리자만 쓸 수 있음")
         return
+    st.html(PRACTICE_CSS)
     st.warning(WARNING)
     units = S.get("practice_units")
     if not units:
@@ -299,37 +339,73 @@ def render(pool, user):
     records = S.get("practice_records", {})
     states = practice.unit_states(units, records, S.get("practice_running"))
     by_label = {u.label: (u, st_) for u, st_ in zip(units, states)}
+    next_unit = next((u for u, st_ in zip(units, states) if st_ == "다음 차례"), None)
     pending = S.get("practice_pending")
-    if pending is not None and not (pending in by_label and by_label[pending][1] == "다음 차례"):
+    if pending is not None and not (next_unit is not None and pending == next_unit.label):
         S.pop("practice_pending", None)  # 이미 실행했거나 실행할 수 없는 요청은 버림
         pending = None
     busy = pending is not None
+    done = [u for u, st_ in zip(units, states) if st_ == "실행함"]
     selected = S.get("practice_selected")
+    if selected not in {u.label for u in done}:
+        selected = done[-1].label if done else None
+    names = collect_names(records)
 
-    left, right = st.columns([2, 3])
+    def name_of(no):
+        return names.get(no, no)
+
+    left, right = st.columns([3, 7])
     with left:
-        st.subheader("시나리오")
+        st.subheader(S.get("practice_title") or "시나리오")
+        st.caption(practice.progress_text(practice.progress(units, states)))
         with st.container(height=640):
             for unit, state in zip(units, states):
-                render_unit_row(unit, state, records.get(unit.label), busy, unit.label == selected)
+                render_step_row(unit, state, records.get(unit.label), unit.label == selected, busy, name_of)
 
     with right:
-        if pending is not None:
-            run_pending(by_label[pending][0], records)
-        elif selected in by_label:
-            unit, state = by_label[selected]
-            if state == "실행함":
-                index = units.index(unit)
-                previous = records.get(units[index - 1].label) if index > 0 else None
-                render_record(unit, records[selected], previous, units)
-            else:
-                st.subheader(f"하위 단계 {unit.label} · {unit.kind}")
-                st.info("아직 실행하지 않았음. " + ("좌측의 실행을 누르십시오" if state == "다음 차례" else "앞 하위 단계부터 실행해야 함"))
-                try:
-                    with st.container(key="practice_after"):
-                        st.markdown("**지금 상태**")
-                        render_view(service.load_view(_pool), [], "after")
-                except Exception as e:
-                    st.caption(f"지금 상태를 읽지 못함({type(e).__name__})")
+        render_right(units, done, selected, next_unit, pending, busy, records, by_label, name_of)
+
+
+def render_right(units, done, selected, next_unit, pending, busy, records, by_label, name_of):
+    ai_on = False
+    if next_unit is not None and next_unit.kind == "배정" and pending is None:
+        ai_on = ai_box()
+    head, run = st.columns([3, 2])
+    with head:
+        st.subheader(f"{selected}단계의 상황" if selected else "시작할 때의 상황")
+    with run:
+        if next_unit is not None:
+            label = f"▶ {next_unit.label}단계 실행"
+            if next_unit.kind == "배정":
+                label += "(실제 모델 호출)" if ai_on else "(앱이 직접 배정)"
+            st.button(label, key="practice_run_next", on_click=on_run, args=(next_unit.label,), disabled=busy,
+                      type="primary", width="stretch", wrap=True)
+    if done:
+        index = [u.label for u in done].index(selected)
+        prev_col, next_col, _ = st.columns([1, 1, 2])
+        with prev_col:
+            st.button("‹ 이전 단계", key="practice_prev", on_click=on_step, args=(done[index - 1].label,) if index > 0 else (None,),
+                      disabled=busy or index == 0, width="stretch")
+        with next_col:
+            last = index == len(done) - 1
+            st.button("다음 단계 ›", key="practice_next", on_click=on_step, args=(done[index + 1].label,) if not last else (None,),
+                      disabled=busy or last, width="stretch")
+
+    if pending is not None:
+        run_pending(by_label[pending][0], records)
+        return
+    if selected is None:
+        if next_unit is None:
+            st.info("실행할 단계가 없음")
         else:
-            st.info("좌측에서 하위 단계를 누르십시오")
+            st.info(f"아직 실행한 단계가 없음. 오른쪽 위의 ▶ {next_unit.label}단계 실행을 누르십시오")
+        try:
+            with st.container(key="practice_after"):
+                st.html(practice_board.board_html(practice_board.state_board(service.load_view(_pool))))
+        except Exception as e:
+            st.caption(f"지금 상태를 읽지 못함({type(e).__name__})")
+        return
+    unit = by_label[selected][0]
+    index = units.index(unit)
+    previous = records.get(units[index - 1].label) if index > 0 else None
+    render_record(unit, records[selected], previous, name_of)

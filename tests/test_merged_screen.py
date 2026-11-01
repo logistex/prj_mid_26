@@ -154,8 +154,17 @@ def texts(at, key):
     return " ".join(str(e.value) for kind in ("markdown", "text", "caption") for e in getattr(box, kind))
 
 
-def run_buttons(at):
-    return [b.key for b in at.button if b.key and b.key.startswith("practice_run_")]
+def screen_text(at):
+    return " ".join(str(e.value) for kind in ("markdown", "subheader", "caption", "info") for e in getattr(at, kind))
+
+
+def board_html(at):
+    """판(st.html)의 HTML. 탭 위의 CSS 요소는 뺌"""
+    return " ".join(e.value for e in at.html if "pb-grid" in e.value)
+
+
+def step_buttons(at):
+    return {b.key: b for b in at.button if b.key and b.key.startswith("practice_step_")}
 
 
 def stub_run_unit(monkeypatch, calls):
@@ -166,42 +175,110 @@ def stub_run_unit(monkeypatch, calls):
     monkeypatch.setattr(practice_run, "run_unit", fake)
 
 
+def two_done():
+    before1, after1 = view(unassigned=[person("a1", "학생이름하나"), person("b1", "학생이름둘")]), None
+    after1 = view([person("a1", "학생이름하나")], unassigned=[person("b1", "학생이름둘")])
+    after2 = view([person("a1", "학생이름하나")], unassigned=[person("b1", "학생이름둘")])
+    after2["teams"][1]["members"] = [person("b1", "학생이름둘")]
+    after2["unassigned"] = []
+    return {"1": record(before1, after1), "2": record(after1, after2)}
+
+
 def test_the_warning_is_at_the_top_of_the_practice_tab(pool):
     at = practice_app()
     assert any(WARNING in str(w.value) and "모두 지웁니다" in str(w.value) for w in at.warning)
 
 
-def test_a_fresh_session_has_no_run_button_and_says_there_is_no_record(pool):
+def test_a_fresh_session_has_no_timeline_and_says_there_is_no_record(pool):
     at = practice_app()
-    assert run_buttons(at) == []
+    assert step_buttons(at) == {} and not any(b.key == "practice_run_next" for b in at.button)
     assert any("저장한 기록이 없음" in str(e.value) for kind in ("markdown", "text", "info") for e in getattr(at, kind))
 
 
-def test_pressing_a_finished_unit_shows_the_saved_before_and_after_without_running(pool, monkeypatch):
+def test_the_timeline_shows_the_title_the_progress_and_each_step_in_order_with_a_one_line_summary(pool):
+    names = {"a1": "학생이름하나", "b1": "학생이름둘"}
+    at = practice_app(practice_units=units(), practice_records=two_done(), practice_names=names, practice_title="쉬움 시나리오")
+    assert any(s.value == "쉬움 시나리오" for s in at.subheader)
+    assert any("3단계 가운데 2단계까지 실행함" in str(c.value) for c in at.caption)
+    buttons = step_buttons(at)
+    assert list(buttons) == ["practice_step_1", "practice_step_2", "practice_step_3_1", "practice_step_3_2"]
+    assert "학생이름하나가 팀1에 지원" in buttons["practice_step_1"].label
+    assert "학생이름둘이 팀2에 지원" in buttons["practice_step_2"].label
+    assert "모집 마감" in buttons["practice_step_3_1"].label and "AI 배정" in buttons["practice_step_3_2"].label
+
+
+def test_only_executed_steps_can_be_pressed_and_the_next_step_is_marked(pool):
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    buttons = step_buttons(at)
+    assert [k for k, b in buttons.items() if not b.disabled] == ["practice_step_1", "practice_step_2"]
+    assert any("다음 차례" in str(e.value) for e in at.markdown)
+    assert at.button(key="practice_run_next").label == "▶ 3-1단계 실행" and not at.button(key="practice_run_next").disabled
+
+
+def test_the_last_executed_step_is_shown_first_and_pressing_a_step_shows_its_situation_without_running(pool, monkeypatch):
     calls = []
     stub_run_unit(monkeypatch, calls)
-    before1, after1 = view(), view([person("a1", "학생이름하나")])
-    records = {"1": record(before1, after1),
-               "2": record(after1, view([person("a1", "학생이름하나"), person("b1", "학생이름둘")]))}
-    at = practice_app(practice_units=units(), practice_records=records)
-    assert [b.label for b in at.button if b.key in ("practice_run_1", "practice_run_2", "practice_run_3_1")] == ["보기", "보기", "실행"]
-    at.button(key="practice_run_1").click().run()
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    assert any(s.value == "2단계의 상황" for s in at.subheader)
+    at.button(key="practice_step_1").click().run()
     assert not at.exception and calls == []
-    assert "학생이름하나" in texts(at, "practice_after") and "학생이름하나" not in texts(at, "practice_before")
-    at.button(key="practice_run_2").click().run()
-    assert "학생이름둘" in texts(at, "practice_after")
-    at.button(key="practice_run_1").click().run()
-    assert "학생이름하나" in texts(at, "practice_after") and calls == []
+    assert any(s.value == "1단계의 상황" for s in at.subheader)
+    assert "학생이름하나" in board_html(at)
+    assert any("지원함" in str(e.value) for e in at.markdown)
 
 
-def test_a_waiting_unit_has_a_disabled_button_and_does_not_run(pool, monkeypatch):
+def test_previous_and_next_buttons_move_only_between_executed_steps(pool):
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    assert at.button(key="practice_next").disabled and not at.button(key="practice_prev").disabled
+    at.button(key="practice_prev").click().run()
+    assert any(s.value == "1단계의 상황" for s in at.subheader)
+    assert at.button(key="practice_prev").disabled and not at.button(key="practice_next").disabled
+    at.button(key="practice_next").click().run()
+    assert any(s.value == "2단계의 상황" for s in at.subheader)
+
+
+def test_the_situation_has_one_sentence_and_the_expected_actual_and_verdict_line(pool):
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    line = texts(at, "practice_verdict").replace("**", "")
+    assert "기대 결과 승인" in line and "실제 결과 승인" in line and "green-badge[일치]" in line
+    assert any("팀2에 지원함" in str(e.value) for e in at.markdown)
+
+
+def test_the_board_marks_new_members_with_a_symbol_and_the_previous_state_side_by_side_is_off_until_asked(pool):
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    html = board_html(at)
+    assert "pb-new" in html and "+" in html and "빈 자리" in html
+    for key in ("practice_before", "practice_after"):
+        try:
+            at.get_by_key(key)
+            raise AssertionError(f"{key}가 처음부터 있음")
+        except KeyError:
+            pass
+    at.toggle(key="practice_show_before").set_value(True).run()
+    assert not at.exception
+    assert "학생이름둘" in texts(at, "practice_after") and "학생이름둘" in texts(at, "practice_before")
+
+
+def test_a_waiting_step_is_not_pressable_and_nothing_runs_until_the_run_button_is_pressed(pool, monkeypatch):
     calls = []
     stub_run_unit(monkeypatch, calls)
     at = practice_app(practice_units=units(), practice_records={})
-    buttons = {b.key: b for b in at.button if b.key and b.key.startswith("practice_run_")}
-    assert buttons["practice_run_1"].disabled is False and buttons["practice_run_1"].label == "실행"
-    assert buttons["practice_run_2"].disabled is True and buttons["practice_run_2"].label == "대기"
+    assert all(b.disabled for b in step_buttons(at).values())
+    assert at.button(key="practice_run_next").label == "▶ 1단계 실행"
     assert calls == []
+
+
+def test_pressing_the_run_button_runs_the_next_step_once_and_shows_it(pool, monkeypatch):
+    calls = []
+    stub_run_unit(monkeypatch, calls)
+    at = practice_app(practice_units=units(), practice_records={})
+    at.button(key="practice_run_next").click().run()
+    assert not at.exception and len(calls) == 1
+    assert "1" in at.session_state["practice_records"]
+    at.run()
+    assert len(calls) == 1
+    assert any(s.value == "1단계의 상황" for s in at.subheader)
+    assert at.button(key="practice_run_next").label == "▶ 2단계 실행"
 
 
 def test_a_pending_request_runs_once_and_is_not_repeated_on_the_next_run(pool, monkeypatch):
@@ -214,15 +291,15 @@ def test_a_pending_request_runs_once_and_is_not_repeated_on_the_next_run(pool, m
     assert "1" in at.session_state["practice_records"]
 
 
-def test_the_assign_row_shows_that_turning_the_toggle_on_calls_real_models(pool, monkeypatch):
+def test_the_assign_step_shows_that_turning_the_toggle_on_calls_real_models(pool, monkeypatch):
     monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 5)
-    records = {"1": record(view(), view()), "2": record(view(), view()), "3-1": record(view(), view(), action="마감")}
+    records = {**two_done(), "3-1": record(view(), view(), action="마감")}
     at = practice_app(practice_units=units(), practice_records=records)
-    assert "앱이 직접 배정" in at.button(key="practice_run_3_2").label
+    assert "앱이 직접 배정" in at.button(key="practice_run_next").label
     assert any("오늘" in str(e.value) and "5" in str(e.value) for kind in ("markdown", "caption", "text") for e in getattr(at, kind))
     at.toggle(key="practice_ai_on").set_value(True).run()
     assert not at.exception
-    assert "실제 모델 호출" in at.button(key="practice_run_3_2").label
+    assert "실제 모델 호출" in at.button(key="practice_run_next").label
     assert any("실제 모델을 부름" in str(e.value) for e in at.markdown)
 
 

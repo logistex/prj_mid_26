@@ -11,12 +11,14 @@ import re
 from dataclasses import dataclass, field
 
 from .ai import APP_FALLBACK
+from .roster import RosterError, parse_roster
 
 STATUSES = ("승인", "대기", "거절", "막힘")
 ACTIONS = ("지원", "투표", "마감", "배정", "확정")
 ADMIN_ACTIONS = ("마감", "배정", "확정")
 CHOICES = ("찬성", "거부")
 HEADER = ["step", "action", "actor", "team_no", "target", "choice", "expected", "note"]
+TEXT_HEADER = ["하는 일", "기대 결과"]  # 있어도 없어도 되는 열: 단계표가 말하는 그 단계의 하는 일과 기대 결과 문장
 MAX_ROWS = 200
 MAX_BYTES = 200 * 1024
 
@@ -55,6 +57,8 @@ class Row:
     choice: str
     expected: str
     note: str
+    plan: str = ""  # "하는 일" 열(없으면 빈 글). 화면에 그대로 보임. 실행에는 쓰지 않음
+    expect_text: str = ""  # "기대 결과" 열
 
     def to_action(self):
         return Action(self.action, self.actor, self.team_no, self.target, self.choice)
@@ -66,6 +70,9 @@ class Unit:
     label: str
     step: int
     rows: tuple
+    plan: str = ""  # 이 단계(step)의 "하는 일" 문장: 단계의 행 가운데 처음으로 적힌 것
+    expect_text: str = ""  # 이 단계의 "기대 결과" 문장
+    step_units: int = 1  # 이 단계가 몇 개의 하위 단계로 나뉘는지
 
     @property
     def key(self):
@@ -103,18 +110,20 @@ def parse_steps(data):
         header = next(reader)
     except StopIteration:
         raise StepTableError(["단계표 파일이 비어 있음"])
-    if [h.strip() for h in header] != HEADER:
-        raise StepTableError(["열이 " + ",".join(HEADER) + "가 아님"])
+    header = [h.strip() for h in header]
+    if header not in (HEADER, HEADER + TEXT_HEADER):
+        raise StepTableError(["열이 " + ",".join(HEADER) + "(뒤에 " + ",".join(TEXT_HEADER) + "를 더해도 됨)가 아님"])
 
     errors, rows = [], []
     for cells in reader:
         n = reader.line_num
         if not any(c.strip() for c in cells):
             continue
-        if len(cells) != len(HEADER):
-            errors.append(f"{n}줄: 열 수가 {len(HEADER)}개가 아님")
+        if len(cells) != len(header):
+            errors.append(f"{n}줄: 열 수가 {len(header)}개가 아님")
             continue
-        step_t, action, actor, team_t, target, choice, expected, note = (c.strip() for c in cells)
+        step_t, action, actor, team_t, target, choice, expected, note, *texts = (c.strip() for c in cells)
+        plan, expect_text = texts if texts else ("", "")
         problems = []
         step = _int(step_t)
         if step is None or step < 1:
@@ -150,7 +159,7 @@ def parse_steps(data):
         if problems:
             errors.extend(f"{n}줄: {p}" for p in problems)
             continue
-        rows.append(Row(n, step, action, actor, team_no, target, choice, expected, note))
+        rows.append(Row(n, step, action, actor, team_no, target, choice, expected, note, plan, expect_text))
 
     if len(rows) + len(errors) > MAX_ROWS:
         errors.append(f"행이 {MAX_ROWS}개를 넘음")
@@ -179,6 +188,56 @@ def check_against_roster(rows, student_nos, team_count):
     return errors
 
 
+@dataclass(frozen=True)
+class PrepCheck:
+    """준비 칸의 검사 결과. errors가 비어 있고 두 파일이 모두 있어야 시작할 수 있음(ready)"""
+    errors: tuple = ()
+    warning: str = ""
+    min_team: int = None
+    max_team: int = None
+    rows: tuple = ()
+    students: tuple = ()
+    ready: bool = False
+
+
+def team_range_text(min_team, max_team):
+    return f"팀{max_team}" if min_team == max_team else f"팀{min_team}~팀{max_team}"
+
+
+def prep_check(roster_bytes, steps_bytes, team_count):
+    """올린 명단, 단계표와 팀 수를 지금 상태로 다시 검사함. 입력이 바뀔 때마다 부르므로 풀린 문제는 사라지고 남은 문제만 나옴.
+    단계표가 쓰는 가장 큰 팀 번호보다 팀 수가 크면 오류는 아니지만 경고함"""
+    errors, students, rows = [], [], []
+    if roster_bytes is not None:
+        try:
+            students = parse_roster(roster_bytes)
+        except RosterError as e:
+            errors.append(f"명단 CSV: {e}")
+    if steps_bytes is not None:
+        try:
+            rows = parse_steps(steps_bytes)
+        except StepTableError as e:
+            errors.extend(f"단계표 CSV {m}" for m in e.errors)
+    team_count = int(team_count or 1)
+    min_team = max_team = None
+    warning = ""
+    if rows:
+        used = [r.team_no for r in rows if r.team_no is not None]
+        if used:
+            min_team, max_team = min(used), max(used)
+            over = sorted({n for n in used if n > team_count})
+            if over:
+                errors.append(f"단계표 CSV: 팀 번호 {subject(', '.join(map(str, over)))} 팀 수({team_count})보다 큼")
+            elif team_count > max_team:
+                first, last = max_team + 1, team_count
+                empty = subject(f"팀{first}" if first == last else f"팀{first}, 팀{last}" if last - first == 1 else f"팀{first}~팀{last}")
+                warning = f"단계표는 팀 {max_team}개를 씀. 팀 {team_count}개로 하면 {empty} 빈 채로 시작해 결과가 공고 부록과 달라질 수 있음"
+        if students:
+            errors.extend(f"단계표 CSV {m}" for m in check_against_roster(rows, {s["student_no"] for s in students}, 10 ** 9))
+    ready = roster_bytes is not None and steps_bytes is not None and not errors
+    return PrepCheck(tuple(errors), warning, min_team, max_team, tuple(rows), tuple(students), ready)
+
+
 def split_units(rows):
     """같은 step의 행을 하위 단계로 나눔. 마감, 배정, 확정 행은 행마다 독립한 하위 단계이고,
     그 사이에 이어진 지원과 투표 행은 1개의 하위 단계임. 하위 단계가 2개 이상인 step은 번호를 N-1, N-2로 붙임"""
@@ -198,9 +257,11 @@ def split_units(rows):
                 current.append(r)
         if current:
             groups.append(current)
+        plan = next((r.plan for r in step_rows if r.plan), "")
+        expect_text = next((r.expect_text for r in step_rows if r.expect_text), "")
         for i, g in enumerate(groups, start=1):
             label = str(step) if len(groups) == 1 else f"{step}-{i}"
-            units.append(Unit(label, step, tuple(g)))
+            units.append(Unit(label, step, tuple(g), plan, expect_text, len(groups)))
     return units
 
 
@@ -485,34 +546,155 @@ def team_of(view, student_no):
     return None
 
 
+def _find_person(student_no, *views):
+    for view in views:
+        for t in view["teams"]:
+            for p in [*t["members"], *t["pending"]]:
+                if p["student_no"] == student_no:
+                    return p
+        for u in view["unassigned"]:
+            if u["student_no"] == student_no:
+                return u
+    return None
+
+
+def _team(view, team_no):
+    return next((t for t in view["teams"] if t["team_no"] == team_no), None)
+
+
+def _names(people, name_of):
+    return ", ".join(name_of(p["student_no"]) for p in people)
+
+
+def block_reason(message, who, team_no, earlier_team, before, after, name_of):
+    """막힌 지원의 까닭을 누구와 어느 팀 때문인지 밝혀 한 문장으로 씀. 까닭의 종류는 서비스가 돌려준 message로 가림
+
+    earlier_team: 같은 단계에서 이미 낸 대기 지원의 팀 번호(없으면 None)
+    """
+    label = f"팀{team_no}"
+    team = _team(after, team_no) or _team(before, team_no) or {"members": []}
+    members = team["members"]
+    applicant = _find_person(who, before, after) or {"main_role": ""}
+    name = name_of(who)
+    if message == "결과를 기다리는 지원이 있음":
+        waiting = earlier_team or team_of(before, who) or team_of(after, who)
+        if waiting:
+            return f"{topic(name)} 팀{waiting}에 낸 지원의 결과를 기다리는 중이라 다른 팀에 지원할 수 없음(한 번에 한 팀)"
+        return f"{topic(name)} 결과를 기다리는 지원이 있어 다른 팀에 지원할 수 없음(한 번에 한 팀)"
+    if message == "같은 주 역할의 팀원이 있음":
+        same = [m for m in members if m["main_role"] == applicant["main_role"]]
+        if same:
+            return f"{topic(name)} 주 역할({applicant['main_role']})이 {label}의 {josa(_names(same, name_of), '과', '와')} 같아 지원할 수 없음"
+    if message == "팀이 꽉 참":
+        return f"{topic(label)} 이미 {len(members)}명({_names(members, name_of)})이라 {subject(name)} 지원할 수 없음"
+    if message.startswith("필수 포함 역할"):
+        return (f"{subject(name)} 들어가면 {label}({_names(members, name_of)})의 남는 자리가 필수 포함 역할(기획자, 웹 프로그래머)을 "
+                "채우기에 모자라 지원할 수 없음")
+    if message == "모집이 마감됨":
+        return f"모집이 마감되어 {subject(name)} {label}에 지원할 수 없음"
+    if message == "이미 팀이 있음":
+        mine = team_of(before, who) or team_of(after, who)
+        return f"{topic(name)} 이미 {f'팀{mine}의 ' if mine else ''}팀원이라 지원할 수 없음"
+    if message == "없는 팀임":
+        return f"{topic(label)} 없는 팀이라 {subject(name)} 지원할 수 없음"
+    return f"{topic(name)} {label}에 지원할 수 없음({message})"
+
+
+def prior_votes(view, team_no, student_no):
+    """실행하기 전에 이미 들어와 있던 투표: [(투표한 학번, 찬성 또는 거부)]. 대기 지원의 votes는 투표한 학생의 DB id로 키를 가짐"""
+    team = _team(view, team_no)
+    if team is None:
+        return []
+    by_id = {m["id"]: m["student_no"] for m in team["members"]}
+    for p in team["pending"]:
+        if p["student_no"] == student_no:
+            return [(by_id[i], v) for i, v in p.get("votes", {}).items() if i in by_id]
+    return []
+
+
+def waiting_text(members, votes, name_of):
+    """대기하는 까닭: 투표를 기다리는 팀원의 이름. 투표가 일부 들어왔으면 그 투표도 함께 씀. 예: 학생1 찬성, 학생4의 투표를 기다림"""
+    voted = {no for no, _ in votes}
+    waiting = [name_of(m["student_no"]) for m in members if m["student_no"] not in voted]
+    if not votes:
+        return f"팀원 {', '.join(waiting)}의 투표를 기다림"
+    done = ", ".join(f"{name_of(no)} {c}" for no, c in votes)
+    return f"{done}, {', '.join(waiting)}의 투표를 기다림" if waiting else done
+
+
+def _closing_sentence(record, name_of):
+    before, after = record["before"], record["after"]
+    rejected, removed = [], {}
+    for tb in before["teams"]:
+        ta = _team(after, tb["team_no"]) or {"members": [], "pending": []}
+        kept = {p["student_no"] for p in ta["pending"]} | {m["student_no"] for m in ta["members"]}
+        by_id = {m["id"]: m["student_no"] for m in tb["members"]}
+        for p in tb["pending"]:
+            if p["student_no"] in kept:
+                continue
+            voted = {by_id[i] for i in p.get("votes", {}) if i in by_id}
+            silent = [m for m in tb["members"] if m["student_no"] not in voted]
+            why = f"({subject(_names(silent, name_of))} 투표하지 않아 대기)" if silent else ""
+            rejected.append(f"{name_of(p['student_no'])}의 팀{tb['team_no']} 지원{why}")
+        gone = [m for m in tb["members"] if m["student_no"] not in {x["student_no"] for x in ta["members"]}]
+        if gone:
+            removed.setdefault(len(tb["members"]), []).append(f"팀{tb['team_no']}의 {_names(gone, name_of)}")
+    first = f"{', '.join(rejected)}을 거절함" if rejected else "거절한 지원이 없음"
+    if removed:
+        second = " · ".join(f"팀원이 {n}명뿐인 {josa(', '.join(items), '이', '가')} 팀에서 빠짐" for n, items in sorted(removed.items()))
+    else:
+        second = "팀에서 빠진 학생이 없음"
+    return f"{first} · {second}"
+
+
 def narrate(unit, record, name_of):
     """그 단계에서 일어난 일을 한 문장으로. 실제 실행 결과(기록)와 전후 상태로만 씀"""
     rrs = record.get("rows", [])
     if unit.kind != "지원과 투표":
         head = {"마감": "모집 마감", "배정": "AI 배정", "확정": "배정 확정"}[unit.kind]
         rr = rrs[0] if rrs else {"status": "", "message": ""}
+        if unit.kind == "마감" and rr["status"] == "승인" and record.get("before"):
+            return f"{head} → {_closing_sentence(record, name_of)}"
         text = f"{head} → {rr['status']}: {rr['message']}"
         part = record.get("ai")
-        if unit.kind == "배정" and part is not None and not part.get("calls_models") and rr["status"] == "승인":
-            text += ". AI를 부르지 않음(실제 AI 모델 호출을 껐음). 앱이 규칙에 맞는 배정을 직접 찾음"
+        if unit.kind == "배정" and rr["status"] == "승인":
+            pairs = [(no, t) for no, t in (part or {}).get("pairs", [])]
+            if pairs:
+                text += ". " + ", ".join(f"{topic(name_of(no))} 팀{t}에" for no, t in pairs) + " 배정함"
+            if part is not None and not part.get("calls_models"):
+                text += ". AI를 부르지 않음(실제 AI 모델 호출을 껐음). 앱이 규칙에 맞는 배정을 직접 찾음"
+            elif part is not None:
+                text += ". " + ai_source_text(part)
+        if unit.kind == "확정" and rr["status"] == "승인" and record.get("after_db"):
+            teams = " / ".join(f"{t['name']}: {_names(t['members'], name_of) or '팀원 없음'}" for t in record["after_db"]["teams"])
+            checks = record.get("final_checks") or []
+            bad = sum(1 for c in checks if not c["ok"])
+            verdict = (f"규칙 확인 {len(checks)}가지를 모두 통과함" if not bad else f"규칙 확인 {len(checks)}가지 가운데 {bad}가지를 어김") if checks else ""
+            text += f". {teams}" + (f" · {verdict}" if verdict else "")
         return text
     before, after = record["before"], record["after"]
     changes = diff_views(before, after)
     team_changed = {c.team_no for c in changes if c.kind in ("새 팀원", "빠진 팀원")}
-    size_before = {t["team_no"]: len(t["members"]) for t in before["teams"]}
+    outcomes = application_outcomes(unit.rows, rrs)
+    waiting_team = {}
     sentences = []
-    for o in application_outcomes(unit.rows, rrs):
+    for o in outcomes:
         who = name_of(o.student_no)
         team_no = o.team_no or team_of(before, o.student_no) or team_of(after, o.student_no)
+        before_team = _team(before, team_no) or {"members": []}
+        members = before_team["members"]
+        prior = prior_votes(before, team_no, o.student_no) if not o.applied else []
         seq = []
         if o.applied:
             seq.append(f"{subject(who)} 팀{o.team_no}에 지원함")
             if o.first_status == "막힘":
-                seq.append(f"막힘: {o.first_message}")
+                seq.append("막힘: " + block_reason(o.first_message, o.student_no, o.team_no, waiting_team.get(o.student_no),
+                                                  before, after, name_of))
             elif o.first_status == "승인":
                 seq.append("바로 승인되어 팀원이 됨")
             elif o.first_status == "대기":
-                seq.append(f"팀원 {size_before.get(o.team_no, 0)}명의 투표를 기다림")
+                waiting_team[o.student_no] = o.team_no
+                seq.append("대기: " + waiting_text(members, [], name_of))
         elif o.votes:
             seq.append(f"팀원들이 {who}의 팀{team_no} 지원에 투표함" if team_no else f"팀원들이 {who}의 지원에 투표함")
         if o.votes:
@@ -524,7 +706,7 @@ def narrate(unit, record, name_of):
                 why = f"(까닭: {o.reason})" if o.reason else ""
                 seq.append(f"거절{why}. {kept}{topic(who)} 팀이 없는 학생으로 돌아감")
             else:
-                seq.append("아직 결과가 나지 않음")
+                seq.append("대기: " + waiting_text(members, prior + list(o.votes), name_of))
         sentences.append(" → ".join(seq))
     return " / ".join(sentences) if sentences else "일어난 일이 없음"
 

@@ -199,6 +199,14 @@ def test_the_warning_is_at_the_top_of_the_practice_tab(pool):
     assert any(WARNING in str(w.value) and "모두 지웁니다" in str(w.value) for w in at.warning)
 
 
+def test_the_start_button_is_disabled_until_both_files_are_uploaded_and_the_agreement_is_checked(pool):
+    at = practice_app()
+    assert at.button(key="practice_start").disabled
+    at.checkbox(key="practice_agree").check().run()
+    assert at.button(key="practice_start").disabled  # 두 파일이 없으면 동의해도 누를 수 없음
+    assert any("모두 올려야 시작할 수 있음" in str(c.value) for c in at.caption)
+
+
 def test_a_fresh_session_has_no_timeline_and_says_there_is_no_record(pool):
     at = practice_app()
     assert step_buttons(at) == {} and not any(b.key == "practice_run_next" for b in at.button)
@@ -250,6 +258,8 @@ def test_the_last_executed_step_is_shown_first_and_pressing_a_step_shows_its_sit
     assert "학생이름하나" in board_html(at)
     assert any("지원함" in str(e.value) for e in at.markdown)
     assert present(at, "practice_row_sel_1") and not present(at, "practice_step_1") and present(at, "practice_step_2")
+    lines = texts(at, "practice_verdict").replace("**", "")
+    assert "시나리오:" in lines and "기대:" in lines and "실제:" in lines
 
 
 def test_previous_and_next_buttons_move_only_between_executed_steps(pool):
@@ -263,12 +273,38 @@ def test_previous_and_next_buttons_move_only_between_executed_steps(pool):
     assert any(s.value == "▶ 2단계의 상황" for s in at.subheader)
 
 
-def test_the_situation_has_one_sentence_and_the_expected_actual_and_verdict_line(pool):
+def test_the_situation_has_the_three_lines_scenario_expected_and_actual(pool):
     at = practice_app(practice_units=units(), practice_records=two_done())
-    line = texts(at, "practice_verdict").replace("**", "")
-    assert "기대 결과 승인" in line and "실제 결과 승인" in line and "green[○ 일치]" in line
-    assert "badge" not in line
-    assert any("팀2에 지원함" in str(e.value) for e in at.markdown)
+    lines = texts(at, "practice_verdict").replace("**", "")
+    assert "시나리오: 학생이름둘이 팀2에 지원" in lines  # 열이 없는 단계표는 행으로 만든 요약을 씀
+    assert "기대: 승인" in lines
+    assert "실제: :green[○ 일치] · 학생이름둘이 팀2에 지원함 → 바로 승인되어 팀원이 됨" in lines
+    assert "badge" not in lines
+
+
+def text_units():
+    text = ("step,action,actor,team_no,target,choice,expected,note,하는 일,기대 결과\n"
+            "1,지원,a1,1,,,승인,첫째,a1이 팀1에 지원,바로 승인\n"
+            "2,지원,b1,2,,,승인,둘째,b1이 팀2에 지원,승인\n"
+            "3,마감,,,,,승인,,관리자가 마감하고 배정,남은 학생이 모두 배정됨\n3,배정,,,,,승인,,,\n")
+    return practice.split_units(practice.parse_steps(text.encode("utf-8")))
+
+
+def test_the_cards_and_the_three_lines_show_the_sentences_of_the_uploaded_step_table(pool):
+    at = practice_app(practice_units=text_units(), practice_records=two_done())
+    assert "b1이 팀2에 지원" in timeline_html(at) and "바로 승인" not in timeline_html(at)
+    assert "a1이 팀1에 지원" in step_buttons(at)["practice_step_1"].label
+    lines = texts(at, "practice_verdict").replace("**", "")
+    assert "시나리오: b1이 팀2에 지원" in lines and "기대: 승인" in lines
+    html = timeline_html(at)  # 한 단계가 하위 단계 2개로 나뉘면 같은 문장에 이 칸의 일을 덧붙임
+    assert "관리자가 마감하고 배정 · 모집 마감" in html and "관리자가 마감하고 배정 · AI 배정" in html
+
+
+def test_the_three_lines_show_the_expected_sentence_of_the_step_table_even_when_the_step_is_split(pool):
+    records = {**two_done(), "3-1": record(view(), view(), action="마감")}
+    at = practice_app(practice_units=text_units(), practice_records=records)
+    lines = texts(at, "practice_verdict").replace("**", "")
+    assert "시나리오: 관리자가 마감하고 배정" in lines and "기대: 남은 학생이 모두 배정됨" in lines
 
 
 def test_the_board_marks_new_members_with_a_symbol_and_the_previous_state_side_by_side_is_off_until_asked(pool):
@@ -406,7 +442,7 @@ def test_an_executed_assign_step_says_who_assigned_and_the_sentence_says_no_ai_w
     rec["ai"] = ai_part()
     at = practice_app(practice_units=units(), practice_records={**before_assign(), "3-2": rec})
     assert "AI 안 부름 · 앱이 직접 배정" in texts(at, "practice_checks")
-    assert "AI 안 부름 · 앱이 직접 배정" in timeline_html(at)
+    assert "AI 안 부름" not in timeline_html(at)  # 카드에는 하는 일 문장과 결과만 있음
     assert any("AI를 부르지 않음(실제 AI 모델 호출을 껐음). 앱이 규칙에 맞는 배정을 직접 찾음" in str(e.value) for e in at.markdown)
 
 

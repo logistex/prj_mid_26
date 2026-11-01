@@ -389,3 +389,121 @@ def test_run_unit_takes_no_expected_results_and_actions_carry_none():
     row = parse("1,지원,a1,1,,,승인,설명\n")[0]
     action = row.to_action()
     assert not hasattr(action, "expected") and not hasattr(action, "note")
+
+
+# ---- 단계표의 "하는 일", "기대 결과" 열(2026-11-01) ----
+
+TEXT_STEPS = ("step,action,actor,team_no,target,choice,expected,note,하는 일,기대 결과\n"
+              "1,지원,a1,1,,,승인,n,\"a1이 팀1에, b1이 팀2에 지원\",2명 모두 바로 승인\n"
+              "1,지원,b1,2,,,승인,n,,\n"
+              "2,마감,,,,,승인,n,관리자가 마감하고 배정,남은 학생이 모두 배정됨\n"
+              "2,배정,,,,,승인,n,,\n")
+
+
+def test_the_step_table_may_have_the_two_text_columns_and_the_units_carry_the_sentences():
+    rows = practice.parse_steps(TEXT_STEPS.encode("utf-8"))
+    assert rows[0].plan == "a1이 팀1에, b1이 팀2에 지원" and rows[0].expect_text == "2명 모두 바로 승인"
+    assert rows[1].plan == "" and rows[1].expect_text == ""
+    units = practice.split_units(rows)
+    assert [(u.label, u.plan, u.expect_text, u.step_units) for u in units] == [
+        ("1", "a1이 팀1에, b1이 팀2에 지원", "2명 모두 바로 승인", 1),
+        ("2-1", "관리자가 마감하고 배정", "남은 학생이 모두 배정됨", 2),
+        ("2-2", "관리자가 마감하고 배정", "남은 학생이 모두 배정됨", 2)]
+
+
+def test_a_step_table_without_the_text_columns_still_works():
+    rows = practice.parse_steps(("step,action,actor,team_no,target,choice,expected,note\n1,지원,a1,1,,,승인,n\n").encode("utf-8"))
+    assert rows[0].plan == "" and rows[0].expect_text == ""
+    (unit,) = practice.split_units(rows)
+    assert unit.plan == "" and unit.expect_text == "" and unit.step_units == 1
+
+
+def test_a_header_with_only_one_of_the_text_columns_is_refused():
+    with pytest.raises(practice.StepTableError):
+        practice.parse_steps(b"step,action,actor,team_no,target,choice,expected,note,\xed\x95\x98\xeb\x8a\x94 \xec\x9d\xbc\n1,\xec\xa7\x80\xec\x9b\x90,a1,1,,,,,x\n")
+
+
+def test_the_practice_step_tables_carry_the_appendix_sentences_in_the_first_row_of_each_step():
+    from conftest import DATA
+    for name, steps in (("쉬움", 6), ("중간", 11), ("어려움", 15)):
+        rows = practice.parse_steps((DATA / f"{name}_단계.csv").read_bytes())
+        units = practice.split_units(rows)
+        assert len({u.step for u in units}) == steps
+        assert all(u.plan and u.expect_text for u in units), name
+    easy = practice.parse_steps((DATA / "쉬움_단계.csv").read_bytes())
+    assert easy[0].plan == "학생1(PL;RW)이 팀1에, 학생2(PL;PT)가 팀2에, 학생3(PL;TT)이 팀3에 지원"
+    assert easy[0].expect_text == "3명 모두 바로 승인"
+
+
+# ---- 준비 칸의 검사(요청 1번): 입력이 바뀔 때마다 다시 검사함 ----
+
+ROSTER = "student_no,name,main_role,sub_roles\na1,A,기획자,\nb1,B,웹 프로그래머,\n".encode("utf-8")
+STEPS = ("step,action,actor,team_no,target,choice,expected,note\n"
+         "1,지원,a1,3,,,승인,\n2,지원,b1,4,,,승인,\n").encode("utf-8")
+
+
+def test_a_team_count_that_is_too_small_is_an_error_that_names_the_team_numbers():
+    check = practice.prep_check(ROSTER, STEPS, 2)
+    assert check.errors == ("단계표 CSV: 팀 번호 3, 4가 팀 수(2)보다 큼",) and not check.ready
+    assert practice.prep_check(ROSTER, STEPS, 3).errors == ("단계표 CSV: 팀 번호 4가 팀 수(3)보다 큼",)
+
+
+def test_fixing_the_team_count_clears_the_error_and_the_start_becomes_possible():
+    assert practice.prep_check(ROSTER, STEPS, 4).errors == () and practice.prep_check(ROSTER, STEPS, 4).ready
+
+
+def test_a_team_count_larger_than_the_step_table_uses_is_a_yellow_warning_not_an_error():
+    check = practice.prep_check(ROSTER, STEPS, 5)
+    assert check.errors == () and check.ready
+    assert check.warning == "단계표는 팀 4개를 씀. 팀 5개로 하면 팀5가 빈 채로 시작해 결과가 공고 부록과 달라질 수 있음"
+    assert practice.prep_check(ROSTER, STEPS, 6).warning.startswith("단계표는 팀 4개를 씀. 팀 6개로 하면 팀5, 팀6이 빈 채로")
+    assert "팀5~팀100이 빈 채로" in practice.prep_check(ROSTER, STEPS, 100).warning
+    assert practice.prep_check(ROSTER, STEPS, 4).warning == ""
+
+
+def test_the_other_problems_stay_until_they_are_fixed_and_the_team_count_does_not_hide_them():
+    bad_roster = b"student_no,name,main_role,sub_roles\n1,A,\xeb\x8f\x84\xeb\x91\x91,\n"
+    check = practice.prep_check(bad_roster, STEPS, 4)
+    assert any(e.startswith("명단 CSV:") for e in check.errors) and not check.ready
+    unknown = ("step,action,actor,team_no,target,choice,expected,note\n1,지원,zz,1,,,승인,\n").encode("utf-8")
+    assert any("zz가 명단에 없음" in e for e in practice.prep_check(ROSTER, unknown, 4).errors)
+    assert practice.prep_check(ROSTER, b"step,x\n", 4).errors[0].startswith("단계표 CSV 열이")
+
+
+def test_without_both_files_nothing_is_wrong_but_the_start_is_not_ready():
+    assert practice.prep_check(None, None, 3).errors == () and not practice.prep_check(None, None, 3).ready
+    assert practice.prep_check(ROSTER, None, 3).ready is False
+    assert practice.prep_check(None, STEPS, 4).max_team == 4
+
+
+def test_the_team_range_text():
+    assert practice.team_range_text(1, 4) == "팀1~팀4" and practice.team_range_text(2, 2) == "팀2"
+
+
+class FakeUpload:
+    def __init__(self, name, data, file_id):
+        self.name, self.file_id, self._data, self.size = name, file_id, data, len(data)
+
+    def getvalue(self):
+        return self._data
+
+
+def test_uploading_a_step_table_sets_the_team_count_to_the_largest_team_number_once(monkeypatch):
+    from mp import practice_view
+    state = {}
+    monkeypatch.setattr(practice_view, "S", state)
+    state["practice_team_count"] = 3
+    state["practice_steps_file"] = FakeUpload("a.csv", STEPS, "id-1")
+    practice_view.sync_team_count()
+    assert state["practice_team_count"] == 4
+    assert state["practice_auto_team"] == (4, "단계표가 팀3~팀4를 쓰므로 팀 수를 4로 맞춤")
+    state["practice_team_count"] = 5  # 사람이 바꾼 값은 같은 파일이면 그대로 둠
+    practice_view.sync_team_count()
+    assert state["practice_team_count"] == 5
+    other = STEPS.replace(b",4,,,", b",2,,,")
+    state["practice_steps_file"] = FakeUpload("b.csv", other, "id-2")  # 다른 파일을 올리면 다시 맞춤
+    practice_view.sync_team_count()
+    assert state["practice_team_count"] == 3 and state["practice_auto_team"][0] == 3
+    del state["practice_steps_file"]
+    practice_view.sync_team_count()
+    assert "practice_auto_team" not in state and "practice_steps_seen" not in state

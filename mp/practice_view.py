@@ -14,7 +14,6 @@ import streamlit as st
 from mp import ai, practice, practice_board, practice_run, rules, service
 from mp.config import ai_config, get_secret
 from mp.practice import md_escape as md
-from mp.roster import RosterError, parse_roster
 from mp.style import PRACTICE_CSS
 
 S = st.session_state
@@ -39,27 +38,19 @@ def clear():
 
 # ---- 단추를 눌렀을 때 ----
 
+def uploaded(key):
+    f = S.get(key)
+    return None if f is None else f.getvalue()
+
+
 def on_start():
     S.pop("practice_errors", None)
-    roster_file, steps_file = S.get("practice_roster_file"), S.get("practice_steps_file")
-    if roster_file is None or steps_file is None:
-        S["practice_errors"] = ["명단 CSV와 단계표 CSV를 모두 올려야 함"]
-        return
-    try:
-        students = parse_roster(roster_file.getvalue())
-    except RosterError as e:
-        S["practice_errors"] = [f"명단 CSV: {e}"]
-        return
-    try:
-        rows = practice.parse_steps(steps_file.getvalue())
-    except practice.StepTableError as e:
-        S["practice_errors"] = [f"단계표 CSV {m}" for m in e.errors]
+    check = practice.prep_check(uploaded("practice_roster_file"), uploaded("practice_steps_file"), S.get("practice_team_count"))
+    if not check.ready:
+        S["practice_errors"] = list(check.errors) or ["명단 CSV와 단계표 CSV를 모두 올려야 함"]
         return
     team_count = int(S.get("practice_team_count") or 1)
-    errors = practice.check_against_roster(rows, {s["student_no"] for s in students}, team_count)
-    if errors:
-        S["practice_errors"] = [f"단계표 CSV {m}" for m in errors]
-        return
+    roster_file, steps_file = S["practice_roster_file"], S["practice_steps_file"]
     try:
         res = service.start_roster(_pool, S["user_id"], roster_file.getvalue(), team_count)
     except Exception as e:
@@ -70,9 +61,9 @@ def on_start():
         return
     for key in ("practice_pending", "practice_running", "practice_selected", "practice_confirm", "practice_finish_modal"):
         S.pop(key, None)
-    S["practice_units"] = practice.split_units(rows)
+    S["practice_units"] = practice.split_units(list(check.rows))
     S["practice_records"] = {}
-    S["practice_names"] = {s["student_no"]: practice.short_name(s["name"]) for s in students}
+    S["practice_names"] = {s["student_no"]: practice.short_name(s["name"]) for s in check.students}
     S["practice_title"] = practice.scenario_title(getattr(steps_file, "name", ""))
 
 
@@ -170,18 +161,19 @@ def result_html(text):
     return f'<span class="pv-result {cls}">{mark} {escape(text)}</span>'
 
 
-def step_summary(unit, state, record, name_of):
-    """시간 줄 한 칸의 요약. 실행한 배정 단계는 모델을 몇 번 불렀고 누가 배정했는지까지 씀"""
-    text = practice.summarize_unit(unit, name_of)
-    if state == "실행함" and record.get("ai") is not None:
-        text += " · " + practice.ai_source_text(record["ai"])
-    return text
+def step_summary(unit, name_of):
+    """시간 줄 한 칸의 글: 단계표의 "하는 일" 문장을 그대로 씀. 열이 없는 단계표는 행으로 만든 한 줄 요약을 씀.
+    한 단계가 여러 하위 단계로 나뉘어 같은 문장이 되풀이되면 이 칸이 어느 일인지 덧붙임"""
+    own = practice.summarize_unit(unit, name_of)
+    if not unit.plan:
+        return own
+    return f"{unit.plan} · {own}" if unit.step_units > 1 else unit.plan
 
 
 def render_step_row(unit, state, record, selected, busy, name_of):
     """시간 줄의 한 칸. 실행했고 지금 오른쪽에 보이지 않는 단계는 칸 전체가 단추이고(눌러서 보기),
     지금 보이는 단계, 아직 실행하지 않은 단계는 눌러지지 않는 글임"""
-    summary = step_summary(unit, state, record or {}, name_of)
+    summary = step_summary(unit, name_of)
     if state == "실행함" and not selected:
         with st.container(key=f"practice_row_go_{unit.key}"):
             st.button(f"**{unit.label}** {md(summary)}", key=f"practice_step_{unit.key}", on_click=on_step,
@@ -201,22 +193,22 @@ def render_step_row(unit, state, record, selected, busy, name_of):
                 f'{escape(summary)}</span>{result}</div>')
 
 
-def render_verdict(unit, record):
-    verdicts = practice.verdicts(unit.rows, record)
-    expected = ", ".join(r.expected for r in unit.rows if r.expected) or "없음"
-    actual = ", ".join(rr["status"] for rr in record["rows"])
-    verdict = practice.judge_unit(verdicts)
+def render_story(unit, record, previous, name_of):
+    """"▶ N단계의 상황" 바로 아래 세 줄: 시나리오(하는 일), 기대(기대 결과), 실제(일치 여부와 앱이 한 일)"""
+    verdict = practice.judge_unit(practice.verdicts(unit.rows, record))
+    plan = unit.plan or practice.summarize_unit(unit, name_of)
+    expect = unit.expect_text or ", ".join(r.expected for r in unit.rows if r.expected) or "없음"
     with st.container(key="practice_verdict"):
-        st.markdown(f"기대 결과 **{md(expected)}** · 실제 결과 **{md(actual)}** · {verdict_text(verdict)}")
-
-
-def render_record(unit, record, previous, name_of):
-    st.markdown(f"**{md(practice.narrate(unit, record, name_of))}**")
+        st.markdown(f"**시나리오:** {md(plan)}")
+        st.markdown(f"**기대:** {md(expect)}")
+        st.markdown(f"**실제:** {verdict_text(verdict)} · {md(practice.narrate(unit, record, name_of))}")
     if record.get("error"):
         st.error(f"실행 중 오류({record['error']}). 이 하위 단계부터 다시 시작해야 함")
     if previous is not None and practice.is_discontinuous(previous, record):
         st.warning("이전 상태가 앞 단계의 이후 상태와 다름: 다른 곳에서 DB가 바뀌었을 수 있음")
-    render_verdict(unit, record)
+
+
+def render_record(unit, record):
     part = record.get("ai")
     if part is not None:
         with st.container(key="practice_checks"):
@@ -345,14 +337,48 @@ def run_pending(unit, records):
     st.rerun()
 
 
+def sync_team_count():
+    """단계표를 새로 올리면 팀 수를 단계표가 쓰는 가장 큰 팀 번호로 맞춤. 이미 맞춘 파일이면 사람이 바꾼 값을 그대로 둠"""
+    steps_file = S.get("practice_steps_file")
+    if steps_file is None:
+        S.pop("practice_auto_team", None)
+        S.pop("practice_steps_seen", None)
+        return
+    sig = getattr(steps_file, "file_id", None) or (steps_file.name, steps_file.size)
+    if S.get("practice_steps_seen") == sig:
+        return
+    S["practice_steps_seen"] = sig
+    check = practice.prep_check(None, steps_file.getvalue(), 1)  # 팀 수는 쓰지 않고 단계표가 쓰는 팀 번호만 읽음
+    if check.max_team is None:
+        S.pop("practice_auto_team", None)
+        return
+    S["practice_team_count"] = check.max_team
+    S["practice_auto_team"] = (check.max_team, f"단계표가 {practice.team_range_text(check.min_team, check.max_team)}를 쓰므로 "
+                               f"팀 수를 {check.max_team}로 맞춤")
+
+
 def prep_form():
+    S.setdefault("practice_team_count", 3)
     st.file_uploader("명단 CSV", type="csv", key="practice_roster_file")
-    st.number_input("팀 수", min_value=1, value=3, step=1, key="practice_team_count")
     st.file_uploader("단계표 CSV", type="csv", key="practice_steps_file")
+    sync_team_count()
+    st.number_input("팀 수", min_value=1, step=1, key="practice_team_count")
+    check = practice.prep_check(uploaded("practice_roster_file"), uploaded("practice_steps_file"), S.get("practice_team_count"))
+    auto = S.get("practice_auto_team")
+    with st.container(key="practice_prep_notes"):
+        if auto and auto[0] == int(S.get("practice_team_count") or 0):
+            st.info(auto[1])
+        if check.warning:
+            st.warning(check.warning)
+        for message in check.errors:
+            st.markdown(f":red[**✕**] :red[{md(message)}]")
+        if not check.errors and (uploaded("practice_roster_file") is None or uploaded("practice_steps_file") is None):
+            st.caption("명단 CSV와 단계표 CSV를 모두 올려야 시작할 수 있음")
     st.checkbox("기존 팀, 지원, 투표가 모두 지워짐에 동의함", key="practice_agree")
-    st.button("시나리오 시작", key="practice_start", on_click=on_start, disabled=not S.get("practice_agree"))
+    st.button("시나리오 시작", key="practice_start", on_click=on_start, disabled=not (S.get("practice_agree") and check.ready))
     for message in S.get("practice_errors", []):
-        st.markdown(f":red[{md(message)}]")
+        if message not in check.errors:
+            st.markdown(f":red[{md(message)}]")
 
 
 def render(pool, user):
@@ -468,6 +494,10 @@ def render_right(units, done, selected, next_unit, pending, busy, records, by_la
         elif next_unit is not None:
             st.button(f"{next_unit.label}단계 실행", key="practice_run_next", on_click=on_run, args=(next_unit.label,),
                       disabled=busy, type="primary", width="stretch", wrap=True)
+    if selected is not None and pending is None:
+        unit = by_label[selected][0]
+        position = units.index(unit)
+        render_story(unit, records[selected], records.get(units[position - 1].label) if position > 0 else None, name_of)
     if done:
         index = [u.label for u in done].index(selected)
         prev_col, next_col, _ = st.columns([1, 1, 2])
@@ -498,7 +528,4 @@ def render_right(units, done, selected, next_unit, pending, busy, records, by_la
         except Exception as e:
             st.caption(f"지금 상태를 읽지 못함({type(e).__name__})")
         return
-    unit = by_label[selected][0]
-    index = units.index(unit)
-    previous = records.get(units[index - 1].label) if index > 0 else None
-    render_record(unit, records[selected], previous, name_of)
+    render_record(by_label[selected][0], records[selected])

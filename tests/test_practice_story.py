@@ -91,7 +91,7 @@ def test_unit_result_is_the_last_actual_status_that_was_not_skipped():
 def test_narration_of_a_rejected_application_follows_the_actual_votes():
     (unit,) = units_of(REJECT_TEXT)
     assert practice.narrate(unit, reject_record(), name_of) == (
-        "학생7이 팀1에 지원함 → 팀원 2명의 투표를 기다림 → 학생1 찬성, 학생4 거부 → "
+        "학생7이 팀1에 지원함 → 대기: 팀원 학생1, 학생4의 투표를 기다림 → 학생1 찬성, 학생4 거부 → "
         "거절. 팀1은 그대로이고 학생7은 팀이 없는 학생으로 돌아감")
 
 
@@ -101,25 +101,43 @@ def test_narration_of_an_approved_application():
     after = view([(1, [person(1), person(4)], []), (2, [], [])])
     record = {"rows": [rr("지원", "s4", "대기"), rr("투표", "s1", "승인")], "before": before, "after": after}
     assert practice.narrate(unit, record, name_of) == (
-        "학생4가 팀1에 지원함 → 팀원 1명의 투표를 기다림 → 학생1 찬성 → 승인. 학생4가 팀1의 팀원이 됨")
+        "학생4가 팀1에 지원함 → 대기: 팀원 학생1의 투표를 기다림 → 학생1 찬성 → 승인. 학생4가 팀1의 팀원이 됨")
 
 
 def test_narration_of_a_blocked_application_and_an_immediate_approval():
     (unit,) = units_of("1,지원,s3,2,,,막힘,\n1,투표,s1,,s3,찬성,,\n")
     v = view([(2, [], [])], unassigned=[person(3)])
     record = {"rows": [rr("지원", "s3", "막힘", "팀이 가득 참"), rr("투표", "s1", "건너뜀", skipped=True)], "before": v, "after": v}
-    assert practice.narrate(unit, record, name_of) == "학생3이 팀2에 지원함 → 막힘: 팀이 가득 참"
+    assert practice.narrate(unit, record, name_of) == "학생3이 팀2에 지원함 → 막힘: 학생3은 팀2에 지원할 수 없음(팀이 가득 참)"
     (unit2,) = units_of("1,지원,s2,2,,,승인,\n")
     after = view([(2, [person(2)], [])])
     record2 = {"rows": [rr("지원", "s2", "승인")], "before": view([(2, [], [])], unassigned=[person(2)]), "after": after}
     assert practice.narrate(unit2, record2, name_of) == "학생2가 팀2에 지원함 → 바로 승인되어 팀원이 됨"
 
 
-def test_narration_of_admin_units_uses_the_message_of_the_service():
+def test_narration_of_a_closing_with_nothing_to_reject_or_remove():
+    (unit,) = units_of("1,마감,,,,,승인,\n")
+    v = view([(1, [person(1), person(2, "웹 프로그래머")], [])])
+    record = {"rows": [rr("마감", "", "승인", "모집을 마감함. 대기 지원 0건을 거절하고 0명이 팀에서 빠짐")], "before": v, "after": v}
+    assert practice.narrate(unit, record, name_of) == "모집 마감 → 거절한 지원이 없음 · 팀에서 빠진 학생이 없음"
+
+
+def test_narration_of_a_closing_names_the_rejected_application_and_the_students_who_left():
+    # 팀3과 팀4는 팀원이 1명뿐이라 비고, 팀4에 낸 학생12의 지원은 팀원 학생11이 투표하지 않아 대기 중이었음
+    (unit,) = units_of("1,마감,,,,,승인,\n")
+    before = view([(3, [person(3)], []), (4, [person(11)], [pend(12)])])
+    after = view([(3, [], []), (4, [], [])], unassigned=[person(3), person(11), person(12)], phase="closed")
+    record = {"rows": [rr("마감", "", "승인", "모집을 마감함")], "before": before, "after": after}
+    assert practice.narrate(unit, record, name_of) == (
+        "모집 마감 → 학생12의 팀4 지원(학생11이 투표하지 않아 대기)을 거절함 · "
+        "팀원이 1명뿐인 팀3의 학생3, 팀4의 학생11이 팀에서 빠짐")
+
+
+def test_a_blocked_closing_keeps_the_service_message():
     (unit,) = units_of("1,마감,,,,,승인,\n")
     v = view([(1, [], [])])
-    record = {"rows": [rr("마감", "", "승인", "모집을 마감함. 대기 지원 1건을 거절함")], "before": v, "after": v}
-    assert practice.narrate(unit, record, name_of) == "모집 마감 → 승인: 모집을 마감함. 대기 지원 1건을 거절함"
+    record = {"rows": [rr("마감", "", "막힘", "모집 중일 때만 마감할 수 있음")], "before": v, "after": v}
+    assert practice.narrate(unit, record, name_of) == "모집 마감 → 막힘: 모집 중일 때만 마감할 수 있음"
 
 
 # ---- 진행과 시나리오 이름 ----
@@ -280,8 +298,8 @@ def two_applications_record():
 def test_two_applications_by_the_same_student_in_one_step_are_both_in_the_narration():
     (unit,) = units_of("1,지원,s12,4,,,대기,\n1,지원,s12,3,,,막힘,\n")
     assert practice.narrate(unit, two_applications_record(), name_of) == (
-        "학생12가 팀4에 지원함 → 팀원 1명의 투표를 기다림 / "
-        "학생12가 팀3에 지원함 → 막힘: 결과를 기다리는 지원이 있음")
+        "학생12가 팀4에 지원함 → 대기: 팀원 학생1의 투표를 기다림 / "
+        "학생12가 팀3에 지원함 → 막힘: 학생12는 팀4에 낸 지원의 결과를 기다리는 중이라 다른 팀에 지원할 수 없음(한 번에 한 팀)")
 
 
 def test_each_application_of_the_same_student_is_its_own_outcome_and_a_later_vote_goes_to_the_open_one():
@@ -325,7 +343,7 @@ def test_a_rejection_by_a_members_refusal_names_that_reason_too():
     record = reject_record()
     record["rows"][2]["message"] = "팀원이 거부함"
     assert practice.narrate(unit, record, name_of) == (
-        "학생7이 팀1에 지원함 → 팀원 2명의 투표를 기다림 → 학생1 찬성, 학생4 거부 → "
+        "학생7이 팀1에 지원함 → 대기: 팀원 학생1, 학생4의 투표를 기다림 → 학생1 찬성, 학생4 거부 → "
         "거절(까닭: 팀원이 거부함). 팀1은 그대로이고 학생7은 팀이 없는 학생으로 돌아감")
 
 
@@ -351,10 +369,11 @@ PL, WP = "기획자", "웹 프로그래머"
 
 
 def need_line(html, team_name):
-    """team_name 카드의 필수 포함 역할 줄(태그를 뗀 글)"""
+    """team_name 카드의 필수 포함 역할 3줄(태그를 뗀 글)을 " / "로 이은 것"""
     card = html.split('<section class="pb-card')[[f"<b>{team_name}</b>" in c for c in html.split('<section class="pb-card')].index(True)]
-    line = re.search(r'<div class="pb-need">(.*?)</div>', card).group(1)
-    return re.sub(r"<[^>]+>", "", line)
+    block = re.search(r'<div class="pb-need">(.*)</div>\s*<ul', card).group(1)
+    rows = re.findall(r'<div class="pb-row">(.*?)</div>', block)
+    return " / ".join(" ".join(re.sub(r"<[^>]+>", "", r).split()) for r in rows)
 
 
 def total_line(html):
@@ -365,14 +384,14 @@ def test_the_team_line_names_who_fills_each_required_role_and_marks_a_sub_role_a
     v = view([(1, [person(1, PL), person(4, WP)], []),
               (2, [person(2, "테스터", [PL]), person(5, WP)], [])])
     html = practice_board.board_html(practice_board.state_board(v))
-    assert need_line(html, "팀1") == "기획자 ○ 학생1 · 웹 프로그래머 ○ 학생4 · 주 역할 중복 없음 ○"
-    assert need_line(html, "팀2") == "기획자 ○ 학생2(보조) · 웹 프로그래머 ○ 학생5 · 주 역할 중복 없음 ○"
+    assert need_line(html, "팀1") == "기획자 ○ 학생1 / 웹 프로그래머 ○ 학생4 / 주 역할 중복 ○ 없음"
+    assert need_line(html, "팀2") == "기획자 ○ 학생2(보조) / 웹 프로그래머 ○ 학생5 / 주 역할 중복 ○ 없음"
 
 
 def test_one_student_who_can_do_both_required_roles_fills_only_one_of_them():
     v = view([(1, [person(1, PL, [WP]), person(2, "테스터")], [])])
     line = need_line(practice_board.board_html(practice_board.state_board(v)), "팀1")
-    assert line.startswith("기획자 ○ 학생1 · 웹 프로그래머 필요 ·")
+    assert line.startswith("기획자 ○ 학생1 / 웹 프로그래머 필요 /")
 
 
 def test_an_empty_required_role_says_need_before_the_confirmation_and_a_red_cross_after_it():
@@ -485,3 +504,102 @@ def test_finish_summary_without_a_confirm_step_has_no_checks():
     v = view([(1, [person(1)], [])])
     fin = practice.finish_summary(units, {"1": {"rows": [rr("지원", "s1", "승인")], "before": v, "after": v, "after_db": v}})
     assert not fin.has_confirm and fin.checks == () and fin.teams == ()
+
+
+# ---- 막힘과 대기 문장에 까닭이 된 학생과 팀(요청 2, 3번) ----
+
+def blocked_sentence(message, applicant, team_members, team_no=2, applicant_main="기획자", pending_team=None):
+    (unit,) = units_of(f"1,지원,{applicant},{team_no},,,막힘,\n")
+    who = int(applicant[1:])
+    teams = [(team_no, team_members, [])]
+    if pending_team:
+        teams.append((pending_team, [person(1)], [pend(who)]))
+    v = view(teams, unassigned=[person(who, applicant_main)])
+    record = {"rows": [rr("지원", applicant, "막힘", message)], "before": v, "after": v}
+    return practice.narrate(unit, record, name_of)
+
+
+def test_a_block_because_of_a_pending_application_names_the_team_of_that_application():
+    text = blocked_sentence("결과를 기다리는 지원이 있음", "s12", [person(3)], team_no=3, pending_team=4)
+    assert text.endswith("막힘: 학생12는 팀4에 낸 지원의 결과를 기다리는 중이라 다른 팀에 지원할 수 없음(한 번에 한 팀)")
+
+
+def test_a_block_because_of_the_same_main_role_names_the_team_and_the_member():
+    members = [person(1, "기획자"), person(5, "웹 프로그래머")]
+    text = blocked_sentence("같은 주 역할의 팀원이 있음", "s2", members, team_no=1)
+    assert text.endswith("막힘: 학생2는 주 역할(기획자)이 팀1의 학생1과 같아 지원할 수 없음")
+
+
+def test_a_block_because_the_team_is_full_names_the_members():
+    members = [person(1, "기획자"), person(2, "웹 프로그래머"), person(3, "테스터"), person(4, "발표자")]
+    text = blocked_sentence("팀이 꽉 참", "s9", members, applicant_main="보고서 작성자")
+    assert text.endswith("막힘: 팀2는 이미 4명(학생1, 학생2, 학생3, 학생4)이라 학생9가 지원할 수 없음")
+
+
+def test_a_block_because_there_is_no_room_for_the_required_roles_names_the_team_and_the_applicant():
+    members = [person(11, "테스터"), person(15, "발표자")]
+    text = blocked_sentence("필수 포함 역할(기획자, 웹 프로그래머)을 맡을 학생의 자리가 모자람", "s14", members, team_no=3,
+                            applicant_main="보고서 작성자")
+    assert text.endswith("막힘: 학생14가 들어가면 팀3(학생11, 학생15)의 남는 자리가 필수 포함 역할(기획자, 웹 프로그래머)을 "
+                         "채우기에 모자라 지원할 수 없음")
+
+
+def test_a_block_because_the_recruitment_closed_names_the_student_and_the_team():
+    text = blocked_sentence("모집이 마감됨", "s2", [person(3)], team_no=3)
+    assert text.endswith("막힘: 모집이 마감되어 학생2가 팀3에 지원할 수 없음")
+
+
+def test_a_waiting_application_names_the_members_who_have_not_voted_yet():
+    (unit,) = units_of("1,지원,s11,3,,,대기,\n")
+    before = view([(3, [person(1), person(4)], [])], unassigned=[person(11)])
+    after = view([(3, [person(1), person(4)], [pend(11)])])
+    record = {"rows": [rr("지원", "s11", "대기")], "before": before, "after": after}
+    assert practice.narrate(unit, record, name_of) == "학생11이 팀3에 지원함 → 대기: 팀원 학생1, 학생4의 투표를 기다림"
+
+
+def test_a_partial_vote_says_who_voted_and_who_is_still_awaited():
+    (unit,) = units_of("1,투표,s1,,s13,찬성,대기,\n")
+    team1 = [person(1), person(4), person(7)]
+    before = view([(1, team1, [pend(13)])])
+    after = view([(1, team1, [pend(13, {101: "찬성"})])])
+    record = {"rows": [rr("투표", "s1", "대기")], "before": before, "after": after}
+    assert practice.narrate(unit, record, name_of) == (
+        "팀원들이 학생13의 팀1 지원에 투표함 → 학생1 찬성 → 대기: 학생1 찬성, 학생4, 학생7의 투표를 기다림")
+
+
+def test_an_earlier_vote_stays_in_the_waiting_sentence():
+    (unit,) = units_of("1,투표,s4,,s13,찬성,대기,\n")
+    team1 = [person(1), person(4), person(7)]
+    before = view([(1, team1, [pend(13, {101: "찬성"})])])
+    after = view([(1, team1, [pend(13, {101: "찬성", 104: "찬성"})])])
+    record = {"rows": [rr("투표", "s4", "대기")], "before": before, "after": after}
+    assert practice.narrate(unit, record, name_of).endswith("대기: 학생1 찬성, 학생4 찬성, 학생7의 투표를 기다림")
+
+
+# ---- 누를 수 있는 것의 모양과 칸 폭(요청 6~8번) ----
+
+def test_pressable_things_use_the_light_blue_look_and_the_card_has_no_arrow_text():
+    from mp import style, practice_view
+    css = style.PRACTICE_CSS
+    for token in ("#e8eff9", "#8fa9d9", "#2457c5", "#1d3f8f", "rgba(36, 87, 197, 0.25)", "0 2px 6px"):
+        assert token in css, token
+    assert "practice_row_go_\"] button::after" not in css and 'content: "보기' not in css  # 왼쪽 칸에는 화살표 글자가 없음
+    assert "다음 단계 보기 ›" in open(practice_view.__file__, encoding="utf-8").read()  # 이전, 다음 단추의 화살표는 둠
+    assert "#ffffff; box-shadow" not in css and "#1f2937; box-shadow" not in css  # 흰 바탕과 검정 그림자를 쓰지 않음
+
+
+def test_the_role_name_and_mark_columns_have_a_fixed_width_so_the_marks_line_up():
+    from mp import style
+    assert re.search(r"\.pb-rname \{[^}]*width: 7\.5em", style.PRACTICE_CSS)
+    assert re.search(r"\.pb-mk \{[^}]*width: 2\.6em", style.PRACTICE_CSS)
+    assert re.search(r"\.pv-result \{[^}]*width: 5\.2rem", style.PRACTICE_CSS)  # 왼쪽 칸의 결과도 같은 폭이라 기호가 위아래로 맞음
+
+
+def test_the_marks_use_the_same_two_colors_as_the_theme_of_the_other_texts():
+    from conftest import ROOT
+    from mp import style
+    theme = (ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
+    green, red = "#17692e", "#b42318"
+    assert f'greenTextColor = "{green}"' in theme and f'redTextColor = "{red}"' in theme
+    assert re.search(r"\.pb-yes \{[^}]*%s" % green, style.PRACTICE_CSS) and re.search(r"\.pb-no \{[^}]*%s" % red, style.PRACTICE_CSS)
+    assert re.search(r"\.pv-yes \{ color: %s" % green, style.PRACTICE_CSS) and re.search(r"\.pv-no \{ color: %s" % red, style.PRACTICE_CSS)

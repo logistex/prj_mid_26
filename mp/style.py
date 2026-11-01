@@ -28,27 +28,24 @@ WIDE_CSS = """
 # 색만으로 뜻을 나타내지 않으므로 +, −, 취소선, ○, ✕, ? 같은 기호와 글자가 따로 있음. 색은 .streamlit/config.toml의 theme 값을 따름
 PRACTICE_CSS = """
 <style>
-/* 누를 수 있는 것은 진한 테두리, 채운 바탕, 아래쪽 그림자, 오른쪽 끝의 동작 기호를 늘 보이게 하고(마우스를 올리면 더 진해짐),
+/* 누를 수 있는 것은 연한 파랑 바탕, 파란 테두리, 파란 글자, 옅은 파란 그림자를 늘 보이게 하고(마우스를 올리면 테두리와 그림자가 진해짐),
    상황을 알리는 글(결과, 꼬리표)은 테두리, 바탕, 그림자 없이 기호와 색 글자만 씀 */
 [class*="st-key-practice_row_"] { position: relative; margin-bottom: 8px; gap: 0; }
 [class*="st-key-practice_row_"] .stElementContainer:has(.pv-card, .pv-result) { margin: 0; }
 [class*="st-key-practice_row_go_"] .stElementContainer:has(.pv-result) { position: static; }
-.pv-result { font-weight: 700; white-space: nowrap; }
+.pv-result { display: inline-block; width: 5.2rem; flex: none; text-align: left; font-weight: 700; white-space: nowrap; }
 .pv-yes { color: #17692e; } .pv-no { color: #b42318; } .pv-wait { color: #9a4a00; } .pv-none { color: #4b5563; } .pv-next { color: #2457c5; }
 /* 실행했고 지금 보이지 않는 단계: 칸 전체가 단추. 결과는 첫 줄 오른쪽에 고정하고 단추 위에 겹치되 눌림은 단추로 넘김 */
 [class*="st-key-practice_row_go_"] button {
-    border: 2px solid #1f2937; background: #dfe7f5; box-shadow: 0 3px 0 #1f2937; border-radius: 10px;
-    padding: 9px 9.5rem 9px 12px; min-height: 48px; justify-content: flex-start; text-align: left; cursor: pointer;
+    border: 2px solid #8fa9d9; background: #e8eff9; color: #1d3f8f; box-shadow: 0 2px 6px rgba(36, 87, 197, 0.25); border-radius: 10px;
+    padding: 9px 7.4rem 9px 12px; min-height: 48px; justify-content: flex-start; text-align: left; cursor: pointer;
 }
-[class*="st-key-practice_row_go_"] button:hover { background: #cbd8ee; box-shadow: 0 5px 0 #111827; }
+[class*="st-key-practice_row_go_"] button:hover { border-color: #2457c5; box-shadow: 0 3px 10px rgba(36, 87, 197, 0.45); }
 [class*="st-key-practice_row_go_"] button > div, [class*="st-key-practice_row_go_"] button span { width: 100%; justify-content: flex-start !important; }
-[class*="st-key-practice_row_go_"] button p { text-align: left; white-space: normal; }
-[class*="st-key-practice_row_go_"] button::after {
-    content: "보기 ›"; position: absolute; right: 14px; top: 9px; font-weight: 700; color: #1f2937; white-space: nowrap;
-}
-[class*="st-key-practice_row_go_"] .pv-result { position: absolute; right: 5.2rem; top: 9px; pointer-events: none; }
+[class*="st-key-practice_row_go_"] button p { text-align: left; white-space: normal; color: #1d3f8f; }
+[class*="st-key-practice_row_go_"] .pv-result { position: absolute; right: 13px; top: 9px; pointer-events: none; }
 /* 지금 오른쪽에 보이는 단계: 굵은 파란 테두리, 옅은 파란 바탕, 왼쪽 끝의 ▶. 단추가 아님 */
-.pv-card { display: flex; align-items: flex-start; gap: 6px; padding: 9px 12px; border-radius: 10px; }
+.pv-card { display: flex; align-items: flex-start; gap: 6px; padding: 9px 13px; border-radius: 10px; }
 .pv-mark { width: 1.1em; flex: none; color: #2457c5; font-weight: 700; }
 .pv-text { flex: 1; min-width: 0; }
 [class*="st-key-practice_row_sel_"] .pv-card { border: 3px solid #2457c5; background: #e8eef7; padding: 7px 10px; }
@@ -57,18 +54,24 @@ PRACTICE_CSS = """
     opacity: 0.55; border-bottom: 1px solid #d8dee9; border-radius: 0;
 }
 [class*="st-key-practice_row_next_"] .pv-card .pv-result { opacity: 1; }
-/* 오른쪽의 동작 단추: 실행, 이전과 다음 */
+/* 오른쪽의 동작 단추: 실행은 진한 파랑 채움, 이전과 다음은 연한 파랑 바탕 */
 .st-key-practice_run_next button, .st-key-practice_prev button, .st-key-practice_next button {
-    border: 2px solid #1f2937; box-shadow: 0 3px 0 #1f2937; font-weight: 700; white-space: normal;
+    border: 2px solid #2457c5; box-shadow: 0 2px 6px rgba(36, 87, 197, 0.25); font-weight: 700; white-space: normal;
 }
+.st-key-practice_prev button, .st-key-practice_next button { background: #e8eff9; color: #1d3f8f; }
+.st-key-practice_prev button p, .st-key-practice_next button p { color: #1d3f8f; }
 .st-key-practice_run_next button:not(:disabled):hover, .st-key-practice_prev button:not(:disabled):hover,
-.st-key-practice_next button:not(:disabled):hover { box-shadow: 0 5px 0 #111827; cursor: pointer; }
+.st-key-practice_next button:not(:disabled):hover { box-shadow: 0 3px 10px rgba(36, 87, 197, 0.45); cursor: pointer; }
 .st-key-practice_run_next button::after { content: "›"; margin-left: 8px; }
-.st-key-practice_prev button:disabled, .st-key-practice_next button:disabled { box-shadow: none; border-color: #c9d3e3; }
+.st-key-practice_prev button:disabled, .st-key-practice_next button:disabled { box-shadow: none; border-color: #c9d3e3; background: transparent; }
 
 /* 판: 팀 카드와 팀이 없는 학생 */
 .pb-total { font-size: 0.9rem; margin: 0.2rem 0 0.3rem; }
 .pb-need { font-size: 0.82rem; margin: -2px 0 6px; line-height: 1.5; }
+.pb-row { display: flex; align-items: baseline; }
+.pb-rname { flex: none; width: 7.5em; }
+.pb-mk { flex: none; width: 2.6em; font-weight: 700; }
+.pb-rtext { min-width: 0; }
 .pb-legend { font-size: 0.85rem; color: #4b5563; margin: 0.2rem 0 0.6rem; }
 .pb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
 .pb-card, .pb-unassigned { border: 1px solid #c9d3e3; border-radius: 10px; padding: 8px 10px; background: #ffffff; }

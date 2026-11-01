@@ -217,21 +217,25 @@ def _open_mark(confirmed, count=None):
 
 
 
+def _need_row(name, mark, text=""):
+    """역할 이름 칸과 기호 칸의 폭이 고정이라 카드 안의 세 줄과 카드 사이에서 ○, ✕가 같은 세로선에 놓임"""
+    return (f'<div class="pb-row"><span class="pb-rname">{escape(name)}</span> <span class="pb-mk">{mark}</span> '
+            f'<span class="pb-rtext">{text}</span></div>')
+
+
 def _team_need_html(t, confirmed):
-    parts = []
+    rows = []
     for r in t["roles"]:
         if r["who"] is None:
-            mark = BAD_MARK if confirmed else '<span class="pb-none">필요</span>'
-            parts.append(f'{escape(r["role"])} {mark}')
+            rows.append(_need_row(r["role"], BAD_MARK if confirmed else '<span class="pb-none">필요</span>'))
         else:
-            who = escape(r["who"]) + ("(보조)" if r["sub"] else "")
-            parts.append(f'{escape(r["role"])} {OK_MARK} {who}')
+            rows.append(_need_row(r["role"], OK_MARK, escape(r["who"]) + ("(보조)" if r["sub"] else "")))
     if t["dups"]:
         same = "; ".join(f'{escape(role)}({escape(", ".join(names))})' for role, names in t["dups"])
-        parts.append(f'주 역할 중복 {BAD_MARK} {same}')
+        rows.append(_need_row("주 역할 중복", BAD_MARK, same))
     else:
-        parts.append(f'주 역할 중복 없음 {OK_MARK}')
-    return f'<div class="pb-need">{" · ".join(parts)}</div>'
+        rows.append(_need_row("주 역할 중복", OK_MARK, "없음"))
+    return f'<div class="pb-need">{"".join(rows)}</div>'
 
 
 def _total_html(model):

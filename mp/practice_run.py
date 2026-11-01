@@ -95,7 +95,7 @@ def _run_action(pool, admin_id, action, plan, record):
 
 def _assign(pool, admin_id, plan, record):
     models = tuple(plan.models) if plan.ask_factory else ()
-    part = {"calls_models": bool(models), "source": None, "pairs": [], "checks": [], "lines": []}
+    part = {"calls_models": bool(models), "called": 0, "source": None, "pairs": [], "checks": [], "lines": []}
     record["ai"] = part
     prep = service.prepare_assignment(pool, admin_id)
     if prep.result is not None:  # 사전 검사에서 막힘: 규칙을 지키는 배정이 없음 등
@@ -104,6 +104,7 @@ def _assign(pool, admin_id, plan, record):
     ask = plan.ask_factory(prep) if models else None
     result = service.generate_proposal(pool, prep, ask, models, plan.limit, progress)
     part["lines"] = list(progress.lines)
+    part["called"] = progress.called
     proposal = service.load_proposal(pool) if result.ok else None  # 실패한 실행이 앞의 배정안을 읽지 않게 함
     if proposal:
         part["source"] = proposal["source"]

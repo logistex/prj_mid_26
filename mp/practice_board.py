@@ -7,12 +7,41 @@
 """
 from html import escape
 
+from . import rules
 from .practice import application_outcomes, short_name
 
 SLOTS = 4
 VOTE_MARK = {"찬성": "○", "거부": "✕", None: "?"}
 VOTE_CLASS = {"찬성": "pb-yes", "거부": "pb-no", None: "pb-none"}
 VOTE_WORD = {"찬성": "찬성", "거부": "거부", None: "투표 전"}
+
+
+def role_fillers(members):
+    """필수 포함 역할(기획자, 웹 프로그래머)마다 맡은 팀원: [(역할, 팀원 또는 None, 보조 역할로 맡았는지)]
+
+    두 역할은 서로 다른 팀원이 맡아야 하고, 맡은 팀원 수가 많은 쪽, 그다음 주 역할로 맡은 수가 많은 쪽, 그다음 팀원 순서를 따름
+    """
+    roles = rules.REQUIRED_ROLES
+    options = [[m for m in members if role in rules.roles_of(m)] + [None] for role in roles]
+    best, best_score = None, None
+    for first in options[0]:
+        for second in options[1]:
+            if first is not None and first is second:
+                continue
+            picked = (first, second)
+            score = (sum(p is not None for p in picked),
+                     sum(1 for p, role in zip(picked, roles) if p is not None and p["main_role"] == role))
+            if best_score is None or score > best_score:
+                best, best_score = picked, score
+    return [(role, p, p is not None and p["main_role"] != role) for role, p in zip(roles, best)]
+
+
+def _same_main(members):
+    """주 역할이 같은 팀원: [(역할, [이름])]"""
+    groups = {}
+    for m in members:
+        groups.setdefault(m["main_role"], []).append(short_name(m["name"]))
+    return [(role, names) for role, names in groups.items() if len(names) > 1]
 
 
 def _role(person):
@@ -107,13 +136,22 @@ def build_board(before, after, rows, record_rows):
                    or any(a["state"] in ("rejected", "blocked") or a["new"] for a in apps)
                    or any(_pending_votes(p, tb["members"]) != _pending_votes(pend_before[no2], tb["members"])
                           for no2, p in pend_after.items() if no2 in pend_before))
+        fillers = [{"role": role, "who": short_name(p["name"]) if p else None, "sub": sub}
+                   for role, p, sub in role_fillers(ta["members"])]
         teams.append({"team_no": no, "name": ta["name"], "count": len(ta["members"]), "changed": changed,
-                      "slots": slots, "apps": apps})
+                      "slots": slots, "apps": apps, "roles": fillers, "dups": _same_main(ta["members"])})
 
     ua, ub = {u["student_no"]: u for u in after["unassigned"]}, {u["student_no"]: u for u in before["unassigned"]}
     unassigned = [{"state": "same" if no in ub else "new", "name": short_name(u["name"]), "role": _role(u)} for no, u in ua.items()]
     unassigned += [{"state": "gone", "name": short_name(u["name"]), "role": _role(u)} for no, u in ub.items() if no not in ua]
-    return {"teams": teams, "unassigned": unassigned}
+    confirmed = after["phase"] == "confirmed"
+    total = {
+        "loose": len([u for u in unassigned if u["state"] != "gone"]),
+        "size": sum(1 for t in after["teams"] if not rules.MIN_TEAM_SIZE <= len(t["members"]) <= rules.MAX_TEAM_SIZE),
+        "dup": sum(1 for t in teams if t["dups"]),
+        "required": sum(1 for t in teams if any(r["who"] is None for r in t["roles"])),
+    }
+    return {"teams": teams, "unassigned": unassigned, "confirmed": confirmed, "total": total}
 
 
 def _outcome_team(before, after, student_no):
@@ -167,15 +205,59 @@ def _app_html(a):
     return (f'<div class="pb-chip pb-blocked"><b>지원 막힘</b> {name} <span class="pb-role">{role}</span>{why}</div>')
 
 
+WAIT_WORD = "남음"
+OK_MARK = '<span class="pb-yes">○</span>'
+BAD_MARK = '<span class="pb-no">✕</span>'
+
+
+def _open_mark(confirmed, count=None):
+    """아직 채우지 못한 것의 표시: 확정하기 전에는 회색 글자, 확정한 뒤에는 빨간 ✕"""
+    more = f"({count}팀)" if count else ""
+    return f'<span class="pb-no">✕{more}</span>' if confirmed else f'<span class="pb-none">{WAIT_WORD}{more}</span>'
+
+
+
+def _team_need_html(t, confirmed):
+    parts = []
+    for r in t["roles"]:
+        if r["who"] is None:
+            mark = BAD_MARK if confirmed else '<span class="pb-none">필요</span>'
+            parts.append(f'{escape(r["role"])} {mark}')
+        else:
+            who = escape(r["who"]) + ("(보조)" if r["sub"] else "")
+            parts.append(f'{escape(r["role"])} {OK_MARK} {who}')
+    if t["dups"]:
+        same = "; ".join(f'{escape(role)}({escape(", ".join(names))})' for role, names in t["dups"])
+        parts.append(f'주 역할 중복 {BAD_MARK} {same}')
+    else:
+        parts.append(f'주 역할 중복 없음 {OK_MARK}')
+    return f'<div class="pb-need">{" · ".join(parts)}</div>'
+
+
+def _total_html(model):
+    total, confirmed = model["total"], model["confirmed"]
+
+    def mark(bad, wait_ok=True):
+        if not bad:
+            return OK_MARK
+        return _open_mark(confirmed, bad) if wait_ok else f'{BAD_MARK}({bad}팀)'
+
+    parts = [f'팀이 없는 학생 {total["loose"]}명', f'인원 2~4명 {mark(total["size"])}',
+             f'주 역할 중복 없음 {mark(total["dup"], wait_ok=False)}', f'필수 포함 역할 {mark(total["required"])}']
+    return f'<p class="pb-total"><b>전체</b>: {" · ".join(parts)}</p>'
+
+
 def board_html(model):
     cards = []
+    confirmed = model["confirmed"]
     for t in model["teams"]:
-        flag = '<span class="pb-flag">바뀜</span>' if t["changed"] else ""
+        flag = '<span class="pb-flag">◆ 바뀜</span>' if t["changed"] else ""
         slots = "".join(_slot_html(s) for s in t["slots"])
         apps = "".join(_app_html(a) for a in t["apps"])
         cards.append(
             f'<section class="pb-card{" pb-changed" if t["changed"] else ""}">'
             f'<header><b>{escape(t["name"])}</b> <span class="pb-count">{t["count"]}/4</span>{flag}</header>'
+            f'{_team_need_html(t, confirmed)}'
             f'<ul class="pb-slots">{slots}</ul>{apps}</section>')
     chips = []
     for u in model["unassigned"]:
@@ -190,7 +272,7 @@ def board_html(model):
     rest = "".join(chips) or '<span class="pb-role">없음</span>'
     legend = ('<p class="pb-legend">+ 새로 들어옴 · − 빠짐이나 거절(취소선) · 점선 칩 = 대기 중인 지원 · '
               '투표 ○ 찬성, ✕ 거부, ? 아직 투표하지 않음(회색)</p>')
-    return (f'{legend}<div class="pb-grid">{"".join(cards)}</div>'
+    return (f'{_total_html(model)}{legend}<div class="pb-grid">{"".join(cards)}</div>'
             f'<section class="pb-unassigned"><header><b>팀이 없는 학생</b> '
             f'<span class="pb-count">{sum(1 for u in model["unassigned"] if u["state"] != "gone")}명</span></header>'
             f'<div class="pb-people">{rest}</div></section>')

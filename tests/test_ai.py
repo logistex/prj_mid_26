@@ -277,6 +277,15 @@ def test_prompt_says_not_to_assign_students_who_already_have_a_team():
     assert set(data["students_without_team"][0]) == {"student_no", "name", "main_role", "sub_roles"}
 
 
+def test_prompt_states_the_preference_order_but_keeps_the_five_rules():
+    text = ai.build_messages(TEAMS, UNASSIGNED)[1]["content"]
+    assert "여럿이면 다음 순서로 고르십시오" in text
+    assert text.index("가. 배정한 뒤 팀 인원의 편차가 가장 작은 배정") < text.index("나. 그래도 여럿이면")
+    assert "main_role로 채운 팀이 많은 배정" in text
+    assert all(f"\n{n}. " in text for n in (1, 2, 3, 4))  # 규칙 번호는 그대로이고 선호 순서는 가, 나로 따로 씀
+    assert "\n5. " not in text
+
+
 def test_default_max_tokens_is_12000_and_models_are_the_chosen_three():
     assert ai.MAX_TOKENS == 12000
     assert MODELS == (

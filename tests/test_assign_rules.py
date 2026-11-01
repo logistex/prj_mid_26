@@ -1,5 +1,8 @@
 # 2026-10-30 22:30 KST
 """배정 검사 5가지와 완전 탐색 시험(PRD_step3 10.1절). DB를 쓰지 않음"""
+import itertools
+import random
+
 import pytest
 
 from conftest import DATA
@@ -146,3 +149,103 @@ def test_hard_scenario_state_before_step_15():
     pairs, timed_out = find_assignment(teams, unassigned)
     assert not timed_out and pairs is not None
     assert check_assignment(teams, unassigned, pairs) is None
+
+
+# ---- 앱이 직접 배정할 때 고르는 순서(규칙을 지킨 배정 가운데 인원 편차, 주 역할 충족, 탐색 순서) ----
+
+def sizes_after(teams, pairs):
+    grown = {t["team_no"]: len(t["members"]) for t in teams}
+    for _, team_no in pairs:
+        grown[team_no] += 1
+    return [grown[n] for n in sorted(grown)]
+
+
+def brute_best(teams, unassigned):
+    """모든 배정을 따져 규칙을 지키는 것 가운데 (인원 제곱합, -주 역할 충족)이 가장 작은 첫 배정"""
+    team_nos = sorted(t["team_no"] for t in teams)
+    students = sorted(unassigned, key=lambda s: s["student_no"])
+    best = None
+    for combo in itertools.product(team_nos, repeat=len(students)):
+        pairs = [(s["student_no"], n) for s, n in zip(students, combo)]
+        if check_assignment(teams, unassigned, pairs) is not None:
+            continue
+        grown = {t["team_no"]: list(t["members"]) for t in teams}
+        for s, n in zip(students, combo):
+            grown[n].append(s)
+        key = (sum(len(m) ** 2 for m in grown.values()),
+               -sum(sum(1 for r in (PL, WP) if r in {x["main_role"] for x in m}) for m in grown.values()))
+        if best is None or key < best[0]:
+            best = (key, pairs)
+    return None if best is None else best[1]
+
+
+def test_find_assignment_spreads_students_instead_of_filling_early_teams():
+    # 처음 찾은 배정은 두 학생을 모두 팀1에 넣어 인원이 4, 2, 2가 됨. 가장 고른 배정은 3, 3, 2임
+    s = students_from("쉬움.csv", 2026100)
+    teams = [team(1, s[1], s[4]), team(2, s[2], s[5]), team(3, s[3], s[6])]
+    pairs, _ = find_assignment(teams, [s[7], s[8]])
+    assert sizes_after(teams, pairs) == [3, 3, 2]
+    assert pairs == [("2026107", 1), ("2026108", 2)]
+
+
+def test_find_assignment_prefers_main_role_over_sub_role_when_spread_is_equal():
+    # 두 배정 모두 인원이 3, 2임. 탐색 순서로는 학생4(웹이 보조)가 팀2에 가지만, 웹이 주 역할인 학생3을 팀2에 넣는 쪽을 고름
+    teams = [team(1, st(1, PL), st(2, WP)), team(2, st(5, PL))]
+    unassigned = [st(3, WP), st(4, FD, WP)]
+    pairs, _ = find_assignment(teams, unassigned)
+    assert sizes_after(teams, pairs) == [3, 2]
+    assert pairs == [("3", 2), ("4", 1)]
+
+
+def test_find_assignment_keeps_first_in_order_when_everything_else_is_equal():
+    teams = [team(1, st(1, PL)), team(2, st(2, PL))]
+    unassigned = [st(3, WP), st(4, WP)]
+    assert find_assignment(teams, unassigned)[0] == [("3", 1), ("4", 2)]
+
+
+@pytest.mark.parametrize(
+    "csv_name,base,members,loose",
+    [
+        ("쉬움.csv", 2026100, {1: (1, 4), 2: (2, 5), 3: (3, 6)}, (7, 8)),
+        ("중간.csv", 2026200, {1: (1, 5), 2: (6, 9), 3: (), 4: ()}, (2, 3, 4, 7, 8, 10, 11, 12)),
+        ("어려움.csv", 2026300, {1: (1, 4, 7), 2: (2, 8, 5), 3: (11, 15), 4: ()}, (3, 6, 9, 10, 12, 13, 14, 16)),
+    ],
+)
+def test_find_assignment_in_the_three_scenario_closing_states_is_valid_and_the_most_even(csv_name, base, members, loose):
+    s = students_from(csv_name, base)
+    teams = [team(n, *[s[i] for i in ids]) for n, ids in members.items()]
+    unassigned = [s[i] for i in loose]
+    pairs, timed_out = find_assignment(teams, unassigned)
+    assert not timed_out and check_assignment(teams, unassigned, pairs) is None
+    assert pairs == brute_best(teams, unassigned)  # 모든 배정을 따져 얻은 가장 고른 첫 배정과 같음
+    total = sum(len(t["members"]) for t in teams) + len(unassigned)
+    sizes = sizes_after(teams, pairs)
+    assert max(sizes) - min(sizes) <= (0 if total % len(teams) == 0 else 1) or csv_name == "어려움.csv"
+
+
+def test_find_assignment_equals_brute_force_on_random_cases():
+    rng = random.Random(5)
+    roles = [PL, WP, FD, TT, RW, PT]
+    solved = 0
+    for _ in range(120):
+        team_nos = range(1, rng.randint(2, 4) + 1)
+        nid = 1
+        teams = []
+        for n in team_nos:
+            mains = rng.sample(roles, rng.randint(0, 2))
+            members = []
+            for m in mains:
+                members.append(st(nid, m, *[r for r in rng.sample(roles, rng.randint(0, 2)) if r != m]))
+                nid += 1
+            teams.append(team(n, *members))
+        unassigned = []
+        for _ in range(rng.randint(2, 7)):
+            m = rng.choice(roles)
+            unassigned.append(st(nid, m, *[r for r in rng.sample(roles, 2) if r != m]))
+            nid += 1
+        expected = brute_best(teams, unassigned)
+        pairs, timed_out = find_assignment(teams, unassigned)
+        assert not timed_out
+        assert pairs == expected
+        solved += expected is not None
+    assert solved >= 25  # 해가 있는 사례가 충분히 섞여 있어야 비교가 뜻을 가짐

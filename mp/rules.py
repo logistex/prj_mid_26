@@ -1,5 +1,6 @@
 # 2026-10-30 22:40 KST
 """팀 규칙. DB를 만지지 않는 순수 함수(PRD_step2 3장). 학생은 {id, main_role, sub_roles}를 가진 dict임"""
+import re
 import time
 
 MAX_TEAM_SIZE = 4
@@ -49,6 +50,56 @@ MIN_TEAM_SIZE = 2
 
 def _team_label(team_no):
     return f"팀{team_no}"
+
+
+def _person_label(student):
+    """학생 1명을 가리키는 글: 이름(끝의 괄호는 뺌), 이름이 없으면 학번"""
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", str(student.get("name") or ""))
+    return name or str(student.get("student_no", student.get("id")))
+
+
+def _team_with(team_no, members):
+    """어긴 팀을 팀원과 함께 가리키는 글. 예: 팀2(학생5, 학생6)"""
+    return f"{_team_label(team_no)}({', '.join(_person_label(m) for m in members) or '팀원 없음'})"
+
+
+def _all_bad(grown, test, message):
+    """팀마다 test(팀원)가 None이 아니면 어긴 것임. 어긴 팀을 모두 모아 (설명, 통과 여부)를 돌려줌"""
+    found = []
+    for team_no in sorted(grown):
+        problem = test(grown[team_no])
+        if problem is not None:
+            found.append(message(team_no, grown[team_no], problem))
+    return "; ".join(found), not found
+
+
+def _size_problem(members):
+    return None if MIN_TEAM_SIZE <= len(members) <= MAX_TEAM_SIZE else len(members)
+
+
+def _size_message(team_no, members, count):
+    return f"{_team_with(team_no, members)}은 {count}명임(2~4명이어야 함)"
+
+
+def _same_main_problem(members):
+    roles = {}
+    for m in members:
+        roles.setdefault(m["main_role"], []).append(m)
+    same = {role: group for role, group in roles.items() if len(group) > 1}
+    return same or None
+
+
+def _same_main_message(team_no, members, same):
+    return "; ".join(f"{_team_label(team_no)}에서 {', '.join(_person_label(m) for m in group)}의 주 역할이 {role}로 같음"
+                     for role, group in same.items())
+
+
+def _required_problem(members):
+    return True if required_deficit(members) > 0 else None
+
+
+def _required_message(team_no, members, _):
+    return f"{_team_with(team_no, members)}의 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음"
 
 
 def check_assignment(teams, unassigned, pairs):
@@ -107,15 +158,20 @@ def assignment_checks(teams, unassigned, pairs):
     def add(title, ok, detail):
         out.append({"no": len(out) + 1, "title": title, "ok": ok, "detail": "통과" if ok else detail})
 
+    parts = []
     if assigned - wanted:
-        detail = "팀이 없는 학생이 아닌 학번이 들어 있음"
-    else:
-        detail = "배정되지 않은 학생이 있음"
-    add("팀이 없는 학생이 빠짐없이 배정되고, 그 밖의 학번은 없음", assigned == wanted, detail)
-    dup = [no for no, c in counts.items() if c > 1]
+        parts.append(f"팀이 없는 학생이 아닌 학번이 들어 있음({', '.join(sorted(assigned - wanted))})")
+    if wanted - assigned:
+        parts.append(f"배정되지 않은 학생이 있음({', '.join(_person_label(by_no[no]) for no in sorted(wanted - assigned))})")
+    add("팀이 없는 학생이 빠짐없이 배정되고, 그 밖의 학번은 없음", assigned == wanted, "; ".join(parts))
+    dup = sorted(no for no, c in counts.items() if c > 1)
     bad_team = sorted({team_no for _, team_no in pairs if team_no not in team_nos})
-    add("한 학생이 1번만 배정되고 팀 번호가 있는 팀임", not dup and not bad_team,
-        "한 학생이 두 번 이상 배정됨" if dup else "없는 팀 번호가 들어 있음")
+    parts = []
+    if dup:
+        parts.append(f"한 학생이 두 번 이상 배정됨({', '.join(_person_label(by_no.get(no, {'student_no': no})) for no in dup)})")
+    if bad_team:
+        parts.append(f"없는 팀 번호가 들어 있음({', '.join(_team_label(n) for n in bad_team)})")
+    add("한 학생이 1번만 배정되고 팀 번호가 있는 팀임", not dup and not bad_team, "; ".join(parts))
 
     grown = {t["team_no"]: list(t["members"]) for t in teams}
     placed = set()
@@ -124,21 +180,11 @@ def assignment_checks(teams, unassigned, pairs):
             placed.add(student_no)
             grown[team_no].append(by_no[student_no])
 
-    def first_bad(test, message):
-        for team_no in sorted(grown):
-            problem = test(grown[team_no])
-            if problem is not None:
-                return message(team_no, problem), False
-        return "", True
-
-    detail, ok = first_bad(lambda m: None if MIN_TEAM_SIZE <= len(m) <= MAX_TEAM_SIZE else len(m),
-                           lambda n, k: f"{_team_label(n)}의 인원이 {k}명임(2~4명이어야 함)")
+    detail, ok = _all_bad(grown, _size_problem, _size_message)
     add("배정한 뒤 모든 팀이 2~4명임", ok, detail)
-    detail, ok = first_bad(lambda m: True if len({x["main_role"] for x in m}) != len(m) else None,
-                           lambda n, _: f"{_team_label(n)}에 주 역할이 같은 학생이 있음")
+    detail, ok = _all_bad(grown, _same_main_problem, _same_main_message)
     add("팀 안에 주 역할이 같은 학생이 없음", ok, detail)
-    detail, ok = first_bad(lambda m: True if required_deficit(m) > 0 else None,
-                           lambda n, _: f"{_team_label(n)}에 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음")
+    detail, ok = _all_bad(grown, _required_problem, _required_message)
     add("모든 팀이 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 있음", ok, detail)
     return out
 
@@ -153,51 +199,96 @@ def final_state_checks(teams, unassigned):
     def add(title, ok, detail):
         out.append({"no": len(out) + 1, "title": title, "ok": ok, "detail": "통과" if ok else detail})
 
-    def first_bad(test, message):
-        for t in sorted(teams, key=lambda t: t["team_no"]):
-            problem = test(t["members"])
-            if problem is not None:
-                return message(t["team_no"], problem), False
-        return "", True
-
-    add("모든 학생이 팀에 있음", not unassigned, f"팀이 없는 학생이 {len(unassigned)}명 남음")
-    detail, ok = first_bad(lambda m: None if MIN_TEAM_SIZE <= len(m) <= MAX_TEAM_SIZE else len(m),
-                           lambda n, k: f"{_team_label(n)}의 인원이 {k}명임(2~4명이어야 함)")
+    grown = {t["team_no"]: t["members"] for t in teams}
+    left = ", ".join(_person_label(u) for u in unassigned)
+    add("모든 학생이 팀에 있음", not unassigned, f"팀이 없는 학생 {len(unassigned)}명이 남음({left})")
+    detail, ok = _all_bad(grown, _size_problem, _size_message)
     add("팀마다 2~4명임", ok, detail)
-    detail, ok = first_bad(lambda m: True if len({x["main_role"] for x in m}) != len(m) else None,
-                           lambda n, _: f"{_team_label(n)}에 주 역할이 같은 학생이 있음")
+    detail, ok = _all_bad(grown, _same_main_problem, _same_main_message)
     add("팀 안에 주 역할 중복이 없음", ok, detail)
-    detail, ok = first_bad(lambda m: True if required_deficit(m) > 0 else None,
-                           lambda n, _: f"{_team_label(n)}에 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음")
+    detail, ok = _all_bad(grown, _required_problem, _required_message)
     add("팀마다 필수 포함 역할(기획자, 웹 프로그래머)을 채움", ok, detail)
     return out
 
 
-def find_assignment(teams, unassigned, time_limit=5.0):
-    """규칙을 지키는 배정을 모든 경우를 따져 찾음(되돌아가기). (pairs 또는 None, 시간 초과 여부)
+def _main_filled(members):
+    """필수 포함 역할(기획자, 웹 프로그래머) 2개 가운데 어떤 팀원의 주 역할인 것의 수"""
+    mains = {m["main_role"] for m in members}
+    return sum(1 for role in REQUIRED_ROLES if role in mains)
 
-    학번 순서와 팀 번호 순서로 탐색하므로 결과가 항상 같음. 정원 초과(R1)와 주 역할 중복(R2)이 생기는 가지는 자름
+
+def _min_square_sum(sizes, extra):
+    """팀 인원 sizes에 학생 extra명을 더해 4명을 넘기지 않을 때 인원의 제곱합이 가장 작은 값. 더할 수 없으면 None
+
+    총 인원이 같으면 제곱합이 작을수록 인원의 편차(분산)가 작음. 가장 적은 팀에 1명씩 더하면 가장 작은 값이 됨
+    """
+    sizes = list(sizes)
+    for _ in range(extra):
+        k = min(range(len(sizes)), key=lambda j: sizes[j])
+        if sizes[k] >= MAX_TEAM_SIZE:
+            return None
+        sizes[k] += 1
+    return sum(n * n for n in sizes)
+
+
+def find_assignment(teams, unassigned, time_limit=5.0):
+    """규칙을 지키는 배정 가운데 가장 고른 것을 찾음(되돌아가기). (pairs 또는 None, 시간 초과 여부)
+
+    규칙을 지키는 배정(정원 4명, 팀마다 2~4명, 주 역할 중복 없음, 필수 포함 역할 충족)이 여럿이면 다음 순서로 고름
+    1) 팀 인원의 편차(제곱합)가 가장 작은 것 2) 필수 포함 역할을 주 역할로 채운 수가 가장 많은 것
+    3) 그래도 같으면 학번 순서와 팀 번호 순서로 탐색할 때 먼저 나오는 것. 결과가 항상 같음.
+    시간 안에 끝내지 못하면 그때까지 찾은 가장 나은 배정을 돌려주고, 하나도 없으면 (None, True)
     """
     students = sorted(unassigned, key=lambda s: s["student_no"])
     team_list = sorted(teams, key=lambda t: t["team_no"])
     grown = {t["team_no"]: list(t["members"]) for t in team_list}
     deadline = time.monotonic() + time_limit
     chosen = []
+    remaining_mains = [{s["main_role"] for s in students[i:]} for i in range(len(students) + 1)]
+    best = {"key": None, "pairs": None}  # key = (제곱합, -주 역할로 채운 수). 작을수록 좋음
 
     class Timeout(Exception):
         pass
 
     def finished():
-        for team_no, members in grown.items():
+        for members in grown.values():
             if not MIN_TEAM_SIZE <= len(members) <= MAX_TEAM_SIZE or required_deficit(members) > 0:
                 return False
         return True
+
+    def cannot_beat(i):
+        """지금까지 고른 것에서 이어 가도 best보다 나아질 수 없거나 규칙을 지킬 수 없으면 True"""
+        sizes = [len(m) for m in grown.values()]
+        left = len(students) - i
+        if sum(max(0, MIN_TEAM_SIZE - n) for n in sizes) > left:
+            return True
+        for members in grown.values():
+            if required_deficit(members) > MAX_TEAM_SIZE - len(members):
+                return True
+        if best["key"] is None:
+            return False
+        low = _min_square_sum(sizes, left)
+        if low is None:
+            return True
+        fill_high = 0
+        for members in grown.values():
+            have = {m["main_role"] for m in members}
+            filled = sum(1 for role in REQUIRED_ROLES if role in have)
+            fillable = sum(1 for role in REQUIRED_ROLES if role not in have and role in remaining_mains[i])
+            fill_high += filled + min(MAX_TEAM_SIZE - len(members), fillable)
+        return (low, -fill_high) >= best["key"]
 
     def search(i):
         if time.monotonic() > deadline:
             raise Timeout
         if i == len(students):
-            return finished()
+            if finished():
+                key = (sum(len(m) ** 2 for m in grown.values()), -sum(_main_filled(m) for m in grown.values()))
+                if best["key"] is None or key < best["key"]:
+                    best["key"], best["pairs"] = key, list(chosen)
+            return
+        if cannot_beat(i):
+            return
         student = students[i]
         for t in team_list:
             members = grown[t["team_no"]]
@@ -207,17 +298,15 @@ def find_assignment(teams, unassigned, time_limit=5.0):
                 continue
             members.append(student)
             chosen.append((student["student_no"], t["team_no"]))
-            if search(i + 1):
-                return True
+            search(i + 1)
             chosen.pop()
             members.pop()
-        return False
 
     try:
-        found = search(0)
+        search(0)
     except Timeout:
-        return None, True
-    return (list(chosen) if found else None), False
+        return (best["pairs"], False) if best["pairs"] is not None else (None, True)
+    return best["pairs"], False
 
 
 def explain_no_assignment(teams, unassigned):

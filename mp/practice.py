@@ -10,6 +10,8 @@ import io
 import re
 from dataclasses import dataclass, field
 
+from .ai import APP_FALLBACK
+
 STATUSES = ("승인", "대기", "거절", "막힘")
 ACTIONS = ("지원", "투표", "마감", "배정", "확정")
 ADMIN_ACTIONS = ("마감", "배정", "확정")
@@ -422,6 +424,53 @@ def summarize_unit(unit, name_of):
     return ", ".join(parts)
 
 
+def ai_source_text(part):
+    """배정 하위 단계에서 모델을 몇 번 불렀고 누가 배정했는지 한 줄로. 예: AI 2번 부름 · 2차 모델의 배정안"""
+    if not part.get("calls_models") or not part.get("called"):
+        return "AI 안 부름 · " + ("앱이 직접 배정" if part.get("source") else "배정안 없음")
+    head = f"AI {part['called']}번 부름 · "
+    source = part.get("source") or ""
+    match = re.match(r"(\d+)차 모델", source)
+    if match:
+        return head + f"{match.group(1)}차 모델의 배정안"
+    if source.startswith(APP_FALLBACK):
+        return head + "모두 실패해 앱이 직접 배정"
+    return head + "배정안 없음"
+
+
+@dataclass(frozen=True)
+class Finish:
+    steps: int
+    units: int
+    matched: int
+    compared: int
+    mismatched: tuple
+    has_confirm: bool
+    checks: tuple
+    teams: tuple
+
+
+def finish_summary(units, records):
+    """모든 하위 단계를 실행한 뒤의 요약: 단계 수, 기대와 일치한 하위 단계 수와 다른 번호, 확정한 팀의 규칙 확인과 팀 목록"""
+    matched, compared, mismatched = 0, 0, []
+    for u in units:
+        verdict = judge_unit(verdicts(u.rows, records[u.label]))
+        if verdict == "일치":
+            matched += 1
+        if verdict in ("일치", "불일치"):
+            compared += 1
+        if verdict == "불일치":
+            mismatched.append(u.label)
+    confirm_units = [u for u in units if u.kind == "확정"]
+    record = records[confirm_units[-1].label] if confirm_units else {}
+    final_checks = tuple(record.get("final_checks") or ())
+    teams = ()
+    if final_checks:
+        teams = tuple((t["name"], tuple(short_name(m["name"]) for m in t["members"])) for t in record["after_db"]["teams"])
+    return Finish(len({u.step for u in units}), len(units), matched, compared, tuple(mismatched), bool(confirm_units),
+                  final_checks, teams)
+
+
 def unit_result(unit, record):
     """시간 줄의 결과 배지: 건너뛰지 않은 마지막 행의 실제 결과. 모두 건너뛰었으면 건너뜀"""
     statuses = [rr["status"] for rr in record.get("rows", []) if not rr.get("skipped")]
@@ -442,7 +491,11 @@ def narrate(unit, record, name_of):
     if unit.kind != "지원과 투표":
         head = {"마감": "모집 마감", "배정": "AI 배정", "확정": "배정 확정"}[unit.kind]
         rr = rrs[0] if rrs else {"status": "", "message": ""}
-        return f"{head} → {rr['status']}: {rr['message']}"
+        text = f"{head} → {rr['status']}: {rr['message']}"
+        part = record.get("ai")
+        if unit.kind == "배정" and part is not None and not part.get("calls_models") and rr["status"] == "승인":
+            text += ". AI를 부르지 않음(실제 AI 모델 호출을 껐음). 앱이 규칙에 맞는 배정을 직접 찾음"
+        return text
     before, after = record["before"], record["after"]
     changes = diff_views(before, after)
     team_changed = {c.team_no for c in changes if c.kind in ("새 팀원", "빠진 팀원")}

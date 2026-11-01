@@ -343,3 +343,145 @@ def test_a_rejection_made_by_closing_the_recruitment_says_so_on_the_card():
     after = view([(1, members, [])], unassigned=[person(7)], phase="closed")
     (app,) = team(practice_board.build_board(before, after, (), []), 1)["apps"]
     assert app["reason"] == "모집을 마감함"
+
+
+# ---- 팀 카드의 필수 포함 역할 줄과 전체 줄(요청 6번) ----
+
+PL, WP = "기획자", "웹 프로그래머"
+
+
+def need_line(html, team_name):
+    """team_name 카드의 필수 포함 역할 줄(태그를 뗀 글)"""
+    card = html.split('<section class="pb-card')[[f"<b>{team_name}</b>" in c for c in html.split('<section class="pb-card')].index(True)]
+    line = re.search(r'<div class="pb-need">(.*?)</div>', card).group(1)
+    return re.sub(r"<[^>]+>", "", line)
+
+
+def total_line(html):
+    return re.sub(r"<[^>]+>", "", re.search(r'<p class="pb-total">(.*?)</p>', html).group(1))
+
+
+def test_the_team_line_names_who_fills_each_required_role_and_marks_a_sub_role_as_sub():
+    v = view([(1, [person(1, PL), person(4, WP)], []),
+              (2, [person(2, "테스터", [PL]), person(5, WP)], [])])
+    html = practice_board.board_html(practice_board.state_board(v))
+    assert need_line(html, "팀1") == "기획자 ○ 학생1 · 웹 프로그래머 ○ 학생4 · 주 역할 중복 없음 ○"
+    assert need_line(html, "팀2") == "기획자 ○ 학생2(보조) · 웹 프로그래머 ○ 학생5 · 주 역할 중복 없음 ○"
+
+
+def test_one_student_who_can_do_both_required_roles_fills_only_one_of_them():
+    v = view([(1, [person(1, PL, [WP]), person(2, "테스터")], [])])
+    line = need_line(practice_board.board_html(practice_board.state_board(v)), "팀1")
+    assert line.startswith("기획자 ○ 학생1 · 웹 프로그래머 필요 ·")
+
+
+def test_an_empty_required_role_says_need_before_the_confirmation_and_a_red_cross_after_it():
+    open_view = view([(1, [person(1, PL)], [])])
+    html = practice_board.board_html(practice_board.state_board(open_view))
+    assert "웹 프로그래머 필요" in need_line(html, "팀1") and "✕" not in need_line(html, "팀1")
+    assert '<span class="pb-none">필요</span>' in html
+    done = view([(1, [person(1, PL)], [])], phase="confirmed")
+    html = practice_board.board_html(practice_board.state_board(done))
+    assert "웹 프로그래머 ✕" in need_line(html, "팀1") and "필요" not in need_line(html, "팀1")
+    assert '<span class="pb-no">✕</span>' in html
+
+
+def test_a_duplicate_main_role_is_marked_with_the_students_in_red():
+    v = view([(1, [person(1, PL), person(2, PL), person(3, WP)], [])])
+    line = need_line(practice_board.board_html(practice_board.state_board(v)), "팀1")
+    assert "주 역할 중복 ✕ 기획자(학생1, 학생2)" in line
+
+
+def test_the_total_line_is_above_the_cards_and_counts_what_is_left_before_the_confirmation():
+    v = view([(1, [person(1, PL), person(4, WP)], []), (2, [person(2, PL)], [])], unassigned=[person(9, "테스터")])
+    html = practice_board.board_html(practice_board.state_board(v))
+    assert html.index("pb-total") < html.index("pb-grid")
+    assert total_line(html) == "전체: 팀이 없는 학생 1명 · 인원 2~4명 남음(1팀) · 주 역할 중복 없음 ○ · 필수 포함 역할 남음(1팀)"
+    ok = view([(1, [person(1, PL), person(4, WP)], []), (2, [person(2, PL), person(5, WP)], [])])
+    assert total_line(practice_board.board_html(practice_board.state_board(ok))) == (
+        "전체: 팀이 없는 학생 0명 · 인원 2~4명 ○ · 주 역할 중복 없음 ○ · 필수 포함 역할 ○")
+
+
+def test_the_total_line_uses_a_red_cross_with_the_count_after_the_confirmation():
+    v = view([(1, [person(1, PL), person(4, WP)], []), (2, [person(2, PL)], [])], phase="confirmed")
+    html = practice_board.board_html(practice_board.state_board(v))
+    assert total_line(html) == "전체: 팀이 없는 학생 0명 · 인원 2~4명 ✕(1팀) · 주 역할 중복 없음 ○ · 필수 포함 역할 ✕(1팀)"
+    assert "남음" not in total_line(html)
+
+
+def test_the_status_marks_are_plain_text_with_symbols_not_boxes():
+    html = practice_board.board_html(practice_board.state_board(view([(1, [person(1, PL)], [])])))
+    assert "○" in html and "필요" in html
+    from mp import style
+    for cls in ("pb-flag", "pb-tag", "pv-result"):
+        rule = re.search(r"\n\s*\.%s\s*\{([^}]*)\}" % cls, style.PRACTICE_CSS)
+        assert rule and not re.search(r"border|background|box-shadow", rule.group(1)), cls  # 상황 표시는 테두리, 바탕, 그림자가 없음
+
+
+# ---- 모델을 몇 번 불렀고 누가 배정했는지(요청 2번) ----
+
+@pytest.mark.parametrize("part,text", [
+    ({"calls_models": False, "called": 0, "source": "앱이 직접 배정"}, "AI 안 부름 · 앱이 직접 배정"),
+    ({"calls_models": True, "called": 1, "source": "1차 모델(a:free)"}, "AI 1번 부름 · 1차 모델의 배정안"),
+    ({"calls_models": True, "called": 2, "source": "2차 모델(b:free)"}, "AI 2번 부름 · 2차 모델의 배정안"),
+    ({"calls_models": True, "called": 3, "source": "앱이 직접 배정"}, "AI 3번 부름 · 모두 실패해 앱이 직접 배정"),
+    ({"calls_models": True, "called": 0, "source": None}, "AI 안 부름 · 배정안 없음"),
+    ({"calls_models": False, "called": 0, "source": None}, "AI 안 부름 · 배정안 없음"),
+])
+def test_ai_source_text_says_how_many_times_and_who_assigned(part, text):
+    assert practice.ai_source_text(part) == text
+
+
+def assign_unit():
+    return units_of("1,마감,,,,,승인,\n1,배정,,,,,승인,\n")[1]
+
+
+def test_the_sentence_says_no_ai_was_called_when_the_real_model_call_was_off():
+    v = view([(1, [person(1)], [])])
+    rec = {"rows": [rr("배정", "", "승인", "배정안을 만듦(앱이 직접 배정)")], "before": v, "after": v, "after_db": v,
+           "ai": {"calls_models": False, "called": 0, "source": "앱이 직접 배정"}}
+    text = practice.narrate(assign_unit(), rec, name_of)
+    assert text == ("AI 배정 → 승인: 배정안을 만듦(앱이 직접 배정). AI를 부르지 않음(실제 AI 모델 호출을 껐음). "
+                    "앱이 규칙에 맞는 배정을 직접 찾음")
+    rec["ai"] = {"calls_models": True, "called": 1, "source": "1차 모델(a:free)"}
+    assert "AI를 부르지 않음" not in practice.narrate(assign_unit(), rec, name_of)
+    rec["ai"] = {"calls_models": False, "called": 0, "source": None}
+    rec["rows"] = [rr("배정", "", "막힘", "규칙을 지키는 배정이 없음")]
+    assert "직접 찾음" not in practice.narrate(assign_unit(), rec, name_of)  # 배정하지 못했으면 찾았다고 쓰지 않음
+
+
+# ---- 끝 안내(요청 4번) ----
+
+def finish_fixture(mismatch=False, final_ok=True):
+    units = units_of("1,지원,s1,1,,,승인,\n2,마감,,,,,승인,\n2,배정,,,,,승인,\n2,확정,,,,,승인,\n")
+    v = view([(1, [person(1, PL), person(2, WP)], []), (2, [person(3, PL), person(4, WP)], [])])
+    if not final_ok:
+        v["teams"][1]["members"] = [person(3, PL)]
+    from mp import rules
+    final = rules.final_state_checks([{"team_no": t["team_no"], "members": t["members"]} for t in v["teams"]], v["unassigned"])
+    records = {u.label: {"rows": [rr(r.action, r.actor, "거절" if mismatch and u.label == "2-2" else "승인") for r in u.rows],
+                         "before": v, "after": v, "after_db": v} for u in units}
+    records["2-3"]["final_checks"] = final
+    return units, records
+
+
+def test_finish_summary_counts_steps_matches_and_names_the_checks_and_the_teams():
+    units, records = finish_fixture()
+    fin = practice.finish_summary(units, records)
+    assert (fin.steps, fin.units, fin.matched, fin.compared, fin.mismatched) == (2, 4, 4, 4, ())
+    assert fin.has_confirm and len(fin.checks) == 4 and all(c["ok"] for c in fin.checks)
+    assert fin.teams == (("팀1", ("학생1", "학생2")), ("팀2", ("학생3", "학생4")))
+
+
+def test_finish_summary_lists_the_substeps_that_differ_from_the_expectation_and_the_rule_violations():
+    units, records = finish_fixture(mismatch=True, final_ok=False)
+    fin = practice.finish_summary(units, records)
+    assert fin.matched == 3 and fin.compared == 4 and fin.mismatched == ("2-2",)
+    assert [c["ok"] for c in fin.checks] == [True, False, True, False]
+
+
+def test_finish_summary_without_a_confirm_step_has_no_checks():
+    units = units_of("1,지원,s1,1,,,승인,\n")
+    v = view([(1, [person(1)], [])])
+    fin = practice.finish_summary(units, {"1": {"rows": [rr("지원", "s1", "승인")], "before": v, "after": v, "after_db": v}})
+    assert not fin.has_confirm and fin.checks == () and fin.teams == ()

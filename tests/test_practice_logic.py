@@ -318,6 +318,36 @@ def test_final_state_checks_pass_and_fail_each_check_separately():
     assert rules.final_state_checks(noweb, [])[3]["ok"] is False  # 웹 프로그래머 없음
 
 
+def named(no, main, subs=()):
+    return dict(student(no, main, list(subs)), name=f"학생{no}(약자)")
+
+
+def test_a_violation_names_every_team_and_every_student_at_fault():
+    teams = [{"team_no": 1, "members": [named(1, "기획자"), named(2, "테스터"), named(3, "테스터")]},
+             {"team_no": 2, "members": [named(4, "발표자")]},
+             {"team_no": 3, "members": [named(5, "기획자"), named(6, "기획자"), named(7, "웹 프로그래머")]},
+             {"team_no": 4, "members": [named(8, "웹 프로그래머"), named(9, "발표자")]}]
+    checks = rules.final_state_checks(teams, [named(10, "테스터"), named(11, "보고서 작성자")])
+    assert [c["ok"] for c in checks] == [False, False, False, False]
+    assert checks[0]["detail"] == "팀이 없는 학생 2명이 남음(학생10, 학생11)"
+    assert checks[1]["detail"] == "팀2(학생4)은 1명임(2~4명이어야 함)"
+    assert checks[2]["detail"] == "팀1에서 학생2, 학생3의 주 역할이 테스터로 같음; 팀3에서 학생5, 학생6의 주 역할이 기획자로 같음"
+    assert checks[3]["detail"] == ("팀1(학생1, 학생2, 학생3)의 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음; "
+                                   "팀2(학생4)의 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음; "
+                                   "팀4(학생8, 학생9)의 필수 포함 역할(기획자, 웹 프로그래머)을 채울 수 없음")
+
+
+def test_the_assignment_checks_also_name_every_team_and_student_at_fault():
+    teams = [{"team_no": 1, "members": [named(1, "기획자")]}, {"team_no": 2, "members": [named(2, "기획자")]}]
+    un = [named(3, "기획자"), named(4, "테스터"), named(5, "발표자")]
+    checks = rules.assignment_checks(teams, un, [("s3", 1), ("s3", 2), ("s4", 9)])
+    assert checks[0]["ok"] is False and "학생5" in checks[0]["detail"]
+    assert checks[1]["ok"] is False and "학생3" in checks[1]["detail"] and "팀9" in checks[1]["detail"]
+    placed = rules.assignment_checks(teams, un, [("s3", 1), ("s4", 1), ("s5", 1)])
+    assert placed[3]["detail"] == "팀1에서 학생1, 학생3의 주 역할이 기획자로 같음"
+    assert "팀2(학생2)은 1명임" in placed[2]["detail"]
+
+
 # ---- U-9: AI 호출 한도 ----
 
 def test_quota_blocks_above_the_daily_limit_and_warns_below_the_reserve():

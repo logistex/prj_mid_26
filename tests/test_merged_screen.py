@@ -164,7 +164,17 @@ def board_html(at):
 
 
 def step_buttons(at):
+    """누를 수 있는 시간 줄 칸: 실행했고 지금 오른쪽에 보이지 않는 단계만 단추임"""
     return {b.key: b for b in at.button if b.key and b.key.startswith("practice_step_")}
+
+
+def timeline_html(at):
+    """눌러지지 않는 시간 줄 칸(지금 보이는 단계, 아직 실행하지 않은 단계)의 HTML"""
+    return " ".join(e.value for e in at.html if "pv-card" in e.value)
+
+
+def run_label(at):
+    return at.button(key="practice_run_next").label
 
 
 def stub_run_unit(monkeypatch, calls):
@@ -201,46 +211,63 @@ def test_the_timeline_shows_the_title_the_progress_and_each_step_in_order_with_a
     assert any(s.value == "쉬움 시나리오" for s in at.subheader)
     assert any("3단계 가운데 2단계까지 실행함" in str(c.value) for c in at.caption)
     buttons = step_buttons(at)
-    assert list(buttons) == ["practice_step_1", "practice_step_2", "practice_step_3_1", "practice_step_3_2"]
+    assert list(buttons) == ["practice_step_1"]  # 2단계는 지금 보이는 단계이고 3-1, 3-2는 아직 실행하지 않음
     assert "학생이름하나가 팀1에 지원" in buttons["practice_step_1"].label
-    assert "학생이름둘이 팀2에 지원" in buttons["practice_step_2"].label
-    assert "모집 마감" in buttons["practice_step_3_1"].label and "AI 배정" in buttons["practice_step_3_2"].label
+    html = timeline_html(at)
+    assert html.index("학생이름둘이 팀2에 지원") < html.index("모집 마감") < html.index("AI 배정")
+    for kind in ("sel", "next", "wait"):
+        assert present(at, f"practice_row_{kind}_{'2' if kind == 'sel' else '3_1' if kind == 'next' else '3_2'}")
 
 
-def test_only_executed_steps_can_be_pressed_and_the_next_step_is_marked(pool):
+def test_the_timeline_has_no_fixed_height_box(pool):
+    source = (ROOT / "mp" / "practice_view.py").read_text(encoding="utf-8")
+    assert "height=640" not in source and "container(height" not in source
+
+
+def test_executed_steps_are_pressable_cards_and_the_others_are_plain_text_with_a_status_word(pool):
     at = practice_app(practice_units=units(), practice_records=two_done())
-    buttons = step_buttons(at)
-    assert [k for k, b in buttons.items() if not b.disabled] == ["practice_step_1", "practice_step_2"]
-    assert any("다음 차례" in str(e.value) for e in at.markdown)
-    assert at.button(key="practice_run_next").label == "▶ 3-1단계 실행" and not at.button(key="practice_run_next").disabled
+    button = step_buttons(at)["practice_step_1"]
+    assert not button.disabled and button.help == "이 단계 보기"
+    html = timeline_html(at)
+    assert "▶" in html and "다음 차례" in html and "실행 전" in html  # 보는 단계, 다음 차례, 아직 실행하지 않음
+    assert "보는 중" not in screen_text(at) and "보는 중" not in html
+    assert "모델 호출 없음" not in html and "실제 모델 호출함" not in html
+
+
+def test_the_run_button_says_the_step_to_run_and_the_next_step_is_marked(pool):
+    at = practice_app(practice_units=units(), practice_records=two_done())
+    assert run_label(at) == "3-1단계 실행" and not at.button(key="practice_run_next").disabled
 
 
 def test_the_last_executed_step_is_shown_first_and_pressing_a_step_shows_its_situation_without_running(pool, monkeypatch):
     calls = []
     stub_run_unit(monkeypatch, calls)
     at = practice_app(practice_units=units(), practice_records=two_done())
-    assert any(s.value == "2단계의 상황" for s in at.subheader)
+    assert any(s.value == "▶ 2단계의 상황" for s in at.subheader)
     at.button(key="practice_step_1").click().run()
     assert not at.exception and calls == []
-    assert any(s.value == "1단계의 상황" for s in at.subheader)
+    assert any(s.value == "▶ 1단계의 상황" for s in at.subheader)
     assert "학생이름하나" in board_html(at)
     assert any("지원함" in str(e.value) for e in at.markdown)
+    assert present(at, "practice_row_sel_1") and not present(at, "practice_step_1") and present(at, "practice_step_2")
 
 
 def test_previous_and_next_buttons_move_only_between_executed_steps(pool):
     at = practice_app(practice_units=units(), practice_records=two_done())
     assert at.button(key="practice_next").disabled and not at.button(key="practice_prev").disabled
+    assert at.button(key="practice_prev").label == "‹ 이전 단계 보기" and at.button(key="practice_next").label == "다음 단계 보기 ›"
     at.button(key="practice_prev").click().run()
-    assert any(s.value == "1단계의 상황" for s in at.subheader)
+    assert any(s.value == "▶ 1단계의 상황" for s in at.subheader)
     assert at.button(key="practice_prev").disabled and not at.button(key="practice_next").disabled
     at.button(key="practice_next").click().run()
-    assert any(s.value == "2단계의 상황" for s in at.subheader)
+    assert any(s.value == "▶ 2단계의 상황" for s in at.subheader)
 
 
 def test_the_situation_has_one_sentence_and_the_expected_actual_and_verdict_line(pool):
     at = practice_app(practice_units=units(), practice_records=two_done())
     line = texts(at, "practice_verdict").replace("**", "")
-    assert "기대 결과 승인" in line and "실제 결과 승인" in line and "green-badge[일치]" in line
+    assert "기대 결과 승인" in line and "실제 결과 승인" in line and "green[○ 일치]" in line
+    assert "badge" not in line
     assert any("팀2에 지원함" in str(e.value) for e in at.markdown)
 
 
@@ -263,8 +290,9 @@ def test_a_waiting_step_is_not_pressable_and_nothing_runs_until_the_run_button_i
     calls = []
     stub_run_unit(monkeypatch, calls)
     at = practice_app(practice_units=units(), practice_records={})
-    assert all(b.disabled for b in step_buttons(at).values())
-    assert at.button(key="practice_run_next").label == "▶ 1단계 실행"
+    assert step_buttons(at) == {}  # 실행한 단계가 없으면 누를 수 있는 칸이 없음
+    assert "다음 차례" in timeline_html(at) and "실행 전" in timeline_html(at)
+    assert run_label(at) == "1단계 실행"
     assert calls == []
 
 
@@ -277,8 +305,8 @@ def test_pressing_the_run_button_runs_the_next_step_once_and_shows_it(pool, monk
     assert "1" in at.session_state["practice_records"]
     at.run()
     assert len(calls) == 1
-    assert any(s.value == "1단계의 상황" for s in at.subheader)
-    assert at.button(key="practice_run_next").label == "▶ 2단계 실행"
+    assert any(s.value == "▶ 1단계의 상황" for s in at.subheader)
+    assert run_label(at) == "2단계 실행"
 
 
 def test_a_pending_request_runs_once_and_is_not_repeated_on_the_next_run(pool, monkeypatch):
@@ -291,16 +319,124 @@ def test_a_pending_request_runs_once_and_is_not_repeated_on_the_next_run(pool, m
     assert "1" in at.session_state["practice_records"]
 
 
-def test_the_assign_step_shows_that_turning_the_toggle_on_calls_real_models(pool, monkeypatch):
+def before_assign():
+    return {**two_done(), "3-1": record(view(), view(), action="마감")}
+
+
+def ai_part(calls=False, called=0, source="앱이 직접 배정"):
+    return {"calls_models": calls, "called": called, "source": source, "pairs": [], "checks": [], "lines": []}
+
+
+def capture_plans(monkeypatch, calls, plans):
+    def fake(pool, admin_id, actions, ai_plan=None):
+        calls.append([a.action for a in actions])
+        plans.append(ai_plan)
+        v = view([person("a1", "학생A")])
+        return record(v, v, action=actions[0].action)
+    monkeypatch.setattr(practice_run, "run_unit", fake)
+
+
+def test_the_real_model_toggle_is_on_by_default_and_the_run_button_just_says_the_step(pool, monkeypatch):
     monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 5)
-    records = {**two_done(), "3-1": record(view(), view(), action="마감")}
-    at = practice_app(practice_units=units(), practice_records=records)
-    assert "앱이 직접 배정" in at.button(key="practice_run_next").label
+    at = practice_app(practice_units=units(), practice_records=before_assign())
+    assert at.toggle(key="practice_ai_on").value is True
+    assert run_label(at) == "3-2단계 실행"
     assert any("오늘" in str(e.value) and "5" in str(e.value) for kind in ("markdown", "caption", "text") for e in getattr(at, kind))
-    at.toggle(key="practice_ai_on").set_value(True).run()
-    assert not at.exception
-    assert "실제 모델 호출" in at.button(key="practice_run_next").label
     assert any("실제 모델을 부름" in str(e.value) for e in at.markdown)
+    at.toggle(key="practice_ai_on").set_value(False).run()
+    assert not at.exception
+    assert any("모델을 부르지 않음" in str(e.value) for e in at.markdown)
+
+
+def test_running_the_assign_step_with_the_toggle_on_calls_the_models_without_a_confirm_window(pool, monkeypatch):
+    monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 5)
+    monkeypatch.setattr(practice_view, "get_secret", lambda name: "dummy-key")
+    calls, plans = [], []
+    capture_plans(monkeypatch, calls, plans)
+    at = practice_app(practice_units=units(), practice_records=before_assign())
+    at.button(key="practice_run_next").click().run()
+    assert not at.exception and calls == [["배정"]]
+    assert len(plans[0].models) == 3 and plans[0].ask_factory is not None
+    assert not any("앱이 규칙에 맞는 배정을 직접 찾습니다" in str(e.value) for e in at.markdown)
+
+
+def test_running_the_assign_step_with_the_toggle_off_opens_a_confirm_window_and_runs_nothing(pool, monkeypatch):
+    monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 5)
+    calls, plans = [], []
+    capture_plans(monkeypatch, calls, plans)
+    at = practice_app(practice_units=units(), practice_records=before_assign())
+    at.toggle(key="practice_ai_on").set_value(False).run()
+    at.button(key="practice_run_next").click().run()
+    assert not at.exception and calls == []
+    assert "practice_pending" not in at.session_state
+    text = " ".join(str(e.value) for e in at.markdown)
+    assert "실제 AI 모델 호출이 꺼져 있습니다. 이대로 실행하면 AI를 부르지 않고 앱이 규칙에 맞는 배정을 직접 찾습니다." in text
+    labels = {b.key: b.label for b in at.button}
+    assert labels["practice_confirm_go"] == "앱이 직접 배정으로 실행" and labels["practice_confirm_cancel"] == "취소"
+    at.run()  # 창을 닫은 뒤의 다음 실행: 창이 다시 뜨지 않고 아무것도 실행하지 않음
+    assert calls == [] and "practice_confirm_go" not in {b.key for b in at.button}
+
+
+def test_the_confirmed_run_without_models_gives_the_run_no_models_and_the_other_steps_never_ask(pool, monkeypatch):
+    monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 5)
+    calls, plans = [], []
+    capture_plans(monkeypatch, calls, plans)
+    at = practice_app(practice_units=units(), practice_records=before_assign())
+    at.toggle(key="practice_ai_on").set_value(False).run()
+    at.session_state["practice_pending"] = "3-2"  # 확인 창에서 "앱이 직접 배정으로 실행"을 누른 뒤의 상태
+    at.run()
+    assert calls == [["배정"]] and plans[0].models == () and plans[0].ask_factory is None
+    # 배정이 아닌 단계는 토글과 상관없이 확인 창 없이 바로 실행함
+    at = practice_app(practice_units=units(), practice_records={})
+    at.button(key="practice_run_next").click().run()
+    assert "practice_confirm" not in at.session_state and len(calls) == 2
+
+
+def test_an_exhausted_daily_quota_counts_as_toggle_off_and_asks_for_confirmation(pool, monkeypatch):
+    monkeypatch.setattr(service, "count_ai_calls_today", lambda pool_: 49)
+    calls, plans = [], []
+    capture_plans(monkeypatch, calls, plans)
+    at = practice_app(practice_units=units(), practice_records=before_assign())
+    at.button(key="practice_run_next").click().run()
+    assert calls == [] and any("직접 찾습니다" in str(e.value) for e in at.markdown)
+
+
+def test_an_executed_assign_step_says_who_assigned_and_the_sentence_says_no_ai_was_called(pool):
+    rec = record(view(), view(), action="배정")
+    rec["ai"] = ai_part()
+    at = practice_app(practice_units=units(), practice_records={**before_assign(), "3-2": rec})
+    assert "AI 안 부름 · 앱이 직접 배정" in texts(at, "practice_checks")
+    assert "AI 안 부름 · 앱이 직접 배정" in timeline_html(at)
+    assert any("AI를 부르지 않음(실제 AI 모델 호출을 껐음). 앱이 규칙에 맞는 배정을 직접 찾음" in str(e.value) for e in at.markdown)
+
+
+def test_the_finish_line_replaces_the_run_button_when_every_step_is_done(pool):
+    records = {**before_assign(), "3-2": record(view(), view(), action="배정")}
+    at = practice_app(practice_units=units(), practice_records=records)
+    assert not present(at, "practice_run_next")
+    line = texts(at, "practice_finish")
+    assert "시나리오 끝" in line and "3단계를 모두 실행함" in line and "기대와 일치 4/4" in line
+    assert "불일치" not in line and "규칙" not in line  # 단계표에 확정이 없으면 규칙 문구도 없음
+
+
+def test_the_finish_line_counts_mismatches_in_red(pool):
+    records = {**before_assign(), "3-2": record(view(), view(), action="배정", status="거절")}
+    at = practice_app(practice_units=units(), practice_records=records)
+    line = texts(at, "practice_finish")
+    assert "기대와 일치 3/4" in line and ":red[**불일치 1**]" in line
+
+
+def test_the_finish_window_opens_once_right_after_the_last_step_runs(pool, monkeypatch):
+    calls = []
+    stub_run_unit(monkeypatch, calls)
+    at = practice_app(practice_units=units(), practice_records=before_assign(), practice_pending="3-2")
+    assert not at.exception and len(calls) == 1
+    text = " ".join(str(e.value) for e in at.markdown)
+    assert "실행한 단계: **3단계**" in text and "기대와 일치한 하위 단계: **4/4**" in text
+    assert "practice_finish_close" in {b.key for b in at.button}
+    at.run()  # 닫은 뒤에는 다시 뜨지 않음
+    assert "practice_finish_close" not in {b.key for b in at.button}
+    assert present(at, "practice_finish")
 
 
 def test_logging_out_clears_the_saved_practice_records(pool):

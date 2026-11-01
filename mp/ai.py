@@ -69,6 +69,9 @@ def build_messages(teams, unassigned):
         "3. 한 팀 안에서 main_role(주 역할)이 같은 학생이 2명 이상이면 안 됩니다.\n"
         "4. 모든 팀에서 기획자와 웹 프로그래머를 서로 다른 학생이 1명씩 맡을 수 있어야 합니다. "
         "학생은 main_role 또는 sub_roles에 그 역할이 있으면 맡을 수 있습니다.\n"
+        "위 규칙을 모두 지키는 배정이 여럿이면 다음 순서로 고르십시오(규칙을 어기는 배정이 되면 안 됩니다).\n"
+        "가. 배정한 뒤 팀 인원의 편차가 가장 작은 배정(학생을 앞 번호 팀에 몰아 넣지 않습니다).\n"
+        "나. 그래도 여럿이면 기획자와 웹 프로그래머를 보조 역할보다 main_role로 채운 팀이 많은 배정.\n"
         "답은 JSON만 쓰십시오. 설명, 풀이 과정, 코드 블록 표시(```)를 쓰지 않습니다. 형식: "
         '{"assignments": [{"student_no": "학번", "team_no": 팀 번호}, ...]}\n\n'
         "데이터:\n" + json.dumps(data, ensure_ascii=False)
@@ -196,6 +199,7 @@ class Progress:
     def __init__(self, on_change=None):
         self.lines = []
         self.waiting = ""
+        self.called = 0  # 모델을 부른 횟수(성공과 실패를 모두 셈)
         self._on_change = on_change
 
     def note(self, text):
@@ -232,6 +236,7 @@ def propose(models, ask, fallback_pairs, log, progress, limit):
         )
         log(n, attempt)
         attempts.append(attempt)
+        progress.called = n
         if attempt.outcome == SUCCESS:
             progress.note(f"{n}차 모델의 배정안이 검사를 통과함(소요 {attempt.seconds:.0f}초)")
             return attempt.pairs, f"{n}차 모델({model})", attempts

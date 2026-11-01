@@ -65,6 +65,7 @@ PRACTICE_CSS = """
 .pb-yes { color: #17692e; font-weight: 600; }
 .pb-no { color: #b42318; font-weight: 600; }
 .pb-none { color: #4b5563; }
+.pb-why { margin-top: 2px; font-size: 0.82rem; }
 .pb-sr { position: absolute; left: -9999px; }
 .pb-unassigned { margin-top: 10px; }
 .pb-people { display: flex; flex-wrap: wrap; gap: 6px; }

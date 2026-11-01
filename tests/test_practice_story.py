@@ -34,7 +34,7 @@ def rr(action, actor, status, message="", skipped=False):
 
 
 def name_of(no):
-    return {f"s{i}": f"학생{i}" for i in range(1, 12)}.get(no, no)
+    return {f"s{i}": f"학생{i}" for i in range(1, 20)}.get(no, no)
 
 
 # 학생7이 팀1에 지원하고 팀원 학생1과 학생4가 찬성과 거부를 해 거절된 단계
@@ -265,3 +265,81 @@ def test_the_board_uses_short_names_and_keeps_the_roles_beside_them():
     model = practice_board.state_board(view([(1, [p], [])]))
     slot = team(model, 1)["slots"][0]
     assert slot["name"] == "학생7" and slot["role"] == "프론트엔드 디자이너 (보조: 발표자)"
+
+
+# ---- 일어난 일 문장의 결함 2개(재현 시험): 같은 학생의 지원 2번, 거절된 까닭 ----
+
+def two_applications_record():
+    team4 = [person(1)]
+    before = view([(3, [], []), (4, team4, [])], unassigned=[person(12)])
+    after = view([(3, [], []), (4, team4, [pend(12)])], unassigned=[person(12)])
+    rows = [rr("지원", "s12", "대기", "투표를 기다림"), rr("지원", "s12", "막힘", "결과를 기다리는 지원이 있음")]
+    return {"rows": rows, "before": before, "after": after, "after_db": after}
+
+
+def test_two_applications_by_the_same_student_in_one_step_are_both_in_the_narration():
+    (unit,) = units_of("1,지원,s12,4,,,대기,\n1,지원,s12,3,,,막힘,\n")
+    assert practice.narrate(unit, two_applications_record(), name_of) == (
+        "학생12가 팀4에 지원함 → 팀원 1명의 투표를 기다림 / "
+        "학생12가 팀3에 지원함 → 막힘: 결과를 기다리는 지원이 있음")
+
+
+def test_each_application_of_the_same_student_is_its_own_outcome_and_a_later_vote_goes_to_the_open_one():
+    (unit,) = units_of("1,지원,s12,4,,,대기,\n1,지원,s12,3,,,막힘,\n1,투표,s1,,s12,찬성,승인,\n")
+    rows = [rr("지원", "s12", "대기"), rr("지원", "s12", "막힘", "결과를 기다리는 지원이 있음"), rr("투표", "s1", "승인")]
+    first, second = practice.application_outcomes(unit.rows, rows)
+    assert (first.team_no, first.status, first.votes) == (4, "승인", [("s1", "찬성")])
+    assert (second.team_no, second.status, second.votes) == (3, "막힘", [])
+
+
+def test_the_board_shows_both_the_pending_application_and_the_blocked_one_with_its_reason():
+    (unit,) = units_of("1,지원,s12,4,,,대기,\n1,지원,s12,3,,,막힘,\n")
+    model = board_of(unit, two_applications_record())
+    assert [a["state"] for a in team(model, 4)["apps"]] == ["pending"]
+    (blocked,) = team(model, 3)["apps"]
+    assert blocked["state"] == "blocked" and blocked["reason"] == "결과를 기다리는 지원이 있음"
+    assert "지원 막힘" in practice_board.board_html(model) and "결과를 기다리는 지원이 있음" in practice_board.board_html(model)
+
+
+def rejected_by_check_record():
+    members = [person(2), person(8), person(5)]
+    before = view([(2, members, [pend(6, {102: "찬성", 108: "찬성"})])], unassigned=[person(6)])
+    after = view([(2, members, [])], unassigned=[person(6)])
+    reason = "승인 직전 검사: 같은 주 역할의 팀원이 있음"
+    rows = [rr("투표", "s2", "대기"), rr("투표", "s8", "대기"), rr("투표", "s5", "거절", reason)]
+    return {"rows": rows, "before": before, "after": after, "after_db": after}
+
+
+REJECTED_BY_CHECK = "1,투표,s2,,s6,찬성,대기,\n1,투표,s8,,s6,찬성,대기,\n1,투표,s5,,s6,찬성,거절,\n"
+
+
+def test_a_rejection_names_the_reason_from_the_record_and_the_members_voted_on_the_application():
+    (unit,) = units_of(REJECTED_BY_CHECK)
+    assert practice.narrate(unit, rejected_by_check_record(), name_of) == (
+        "팀원들이 학생6의 팀2 지원에 투표함 → 학생2 찬성, 학생8 찬성, 학생5 찬성 → "
+        "거절(까닭: 승인 직전 검사: 같은 주 역할의 팀원이 있음). 팀2는 그대로이고 학생6은 팀이 없는 학생으로 돌아감")
+
+
+def test_a_rejection_by_a_members_refusal_names_that_reason_too():
+    (unit,) = units_of(REJECT_TEXT)
+    record = reject_record()
+    record["rows"][2]["message"] = "팀원이 거부함"
+    assert practice.narrate(unit, record, name_of) == (
+        "학생7이 팀1에 지원함 → 팀원 2명의 투표를 기다림 → 학생1 찬성, 학생4 거부 → "
+        "거절(까닭: 팀원이 거부함). 팀1은 그대로이고 학생7은 팀이 없는 학생으로 돌아감")
+
+
+def test_the_rejected_application_card_shows_the_reason():
+    (unit,) = units_of(REJECTED_BY_CHECK)
+    model = board_of(unit, rejected_by_check_record())
+    (app,) = team(model, 2)["apps"]
+    assert app["state"] == "rejected" and app["reason"] == "승인 직전 검사: 같은 주 역할의 팀원이 있음"
+    assert "까닭: 승인 직전 검사: 같은 주 역할의 팀원이 있음" in practice_board.board_html(model)
+
+
+def test_a_rejection_made_by_closing_the_recruitment_says_so_on_the_card():
+    members = [person(1), person(2)]
+    before = view([(1, members, [pend(7, {101: "찬성"})])], unassigned=[person(7)])
+    after = view([(1, members, [])], unassigned=[person(7)], phase="closed")
+    (app,) = team(practice_board.build_board(before, after, (), []), 1)["apps"]
+    assert app["reason"] == "모집을 마감함"

@@ -373,25 +373,32 @@ class Outcome:
     first_status: str = ""
     first_message: str = ""
     votes: list = field(default_factory=list)
+    reason: str = ""  # 결과가 난 행의 message(거절된 까닭 등). 서비스가 돌려준 글 그대로임
 
 
 def application_outcomes(rows, record_rows):
-    """하위 단계의 행과 그 실행 기록(rows)에서 지원마다 경과를 모음. 건너뛴 행과 막힌 투표는 넣지 않음"""
-    outcomes = {}
+    """하위 단계의 행과 그 실행 기록(rows)에서 지원 1건마다 경과를 모음(같은 학생이 2번 지원하면 2건).
+    투표는 그 학생의 막히지 않은 가장 최근 지원에 붙임. 건너뛴 행과 막힌 투표는 넣지 않음"""
+    outcomes, latest = [], {}
     for row, rr in zip(rows, record_rows):
         if rr.get("skipped"):
             continue
         if row.action == "지원":
-            outcomes[row.actor] = Outcome(row.actor, row.team_no, rr["status"], True, rr["status"], rr["message"])
+            o = Outcome(row.actor, row.team_no, rr["status"], True, rr["status"], rr["message"])
+            outcomes.append(o)
+            if rr["status"] != "막힘":
+                latest[row.actor] = o
         elif row.action == "투표":
             if rr["status"] == "막힘":
                 continue
-            o = outcomes.get(row.target)
+            o = latest.get(row.target)
             if o is None:
-                o = outcomes[row.target] = Outcome(row.target, None, "", False)
+                o = latest[row.target] = Outcome(row.target, None, "", False)
+                outcomes.append(o)
             o.votes.append((row.actor, row.choice))
             o.status = rr["status"]
-    return list(outcomes.values())
+            o.reason = rr["message"]
+    return outcomes
 
 
 def summarize_unit(unit, name_of):
@@ -454,14 +461,15 @@ def narrate(unit, record, name_of):
             elif o.first_status == "대기":
                 seq.append(f"팀원 {size_before.get(o.team_no, 0)}명의 투표를 기다림")
         elif o.votes:
-            seq.append(f"{topic(who)} 팀{team_no}에 낸 지원에 투표가 있었음")
+            seq.append(f"팀원들이 {who}의 팀{team_no} 지원에 투표함" if team_no else f"팀원들이 {who}의 지원에 투표함")
         if o.votes:
             seq.append(", ".join(f"{name_of(v)} {c}" for v, c in o.votes))
             if o.status == "승인":
                 seq.append(f"승인. {subject(who)} 팀{team_no}의 팀원이 됨")
             elif o.status == "거절":
                 kept = f"{topic(f'팀{team_no}')} 그대로이고 " if team_no not in team_changed else ""
-                seq.append(f"거절. {kept}{topic(who)} 팀이 없는 학생으로 돌아감")
+                why = f"(까닭: {o.reason})" if o.reason else ""
+                seq.append(f"거절{why}. {kept}{topic(who)} 팀이 없는 학생으로 돌아감")
             else:
                 seq.append("아직 결과가 나지 않음")
         sentences.append(" → ".join(seq))

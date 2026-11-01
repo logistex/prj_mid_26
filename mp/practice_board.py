@@ -80,11 +80,15 @@ def build_board(before, after, rows, record_rows):
             if p["student_no"] in shown or p["student_no"] in after_nos:
                 continue
             votes_by_no = _pending_votes(p, tb["members"])
+            reason = ""
             for o in mine:
                 if o.student_no == p["student_no"]:
                     votes_by_no.update(dict(o.votes))
+                    reason = o.reason or reason
+            if not reason and before["phase"] != after["phase"]:
+                reason = "모집을 마감함"  # 대기 지원이 전후 상태 사이에 사라졌고 이 사이에 모집이 마감됨
             apps.append({"state": "rejected", "new": False, "name": short_name(p["name"]), "role": _role(p),
-                         "votes": _vote_list(tb["members"], votes_by_no)})
+                         "votes": _vote_list(tb["members"], votes_by_no), "reason": reason})
             shown.add(p["student_no"])
         for o in mine:
             if o.student_no in shown or o.student_no in after_nos:
@@ -92,9 +96,10 @@ def build_board(before, after, rows, record_rows):
             person = people.get(o.student_no, {"name": o.student_no, "main_role": "", "sub_roles": []})
             if o.status == "거절":
                 apps.append({"state": "rejected", "new": False, "name": short_name(person["name"]), "role": _role(person),
-                             "votes": _vote_list(tb["members"], dict(o.votes))})
+                             "votes": _vote_list(tb["members"], dict(o.votes)), "reason": o.reason})
             elif o.status == "막힘":
-                apps.append({"state": "blocked", "new": False, "name": short_name(person["name"]), "role": _role(person), "votes": []})
+                apps.append({"state": "blocked", "new": False, "name": short_name(person["name"]), "role": _role(person),
+                             "votes": [], "reason": o.first_message})
 
         shown_slots = len(slots)
         slots.extend({"state": "empty"} for _ in range(max(0, SLOTS - shown_slots)))
@@ -155,10 +160,11 @@ def _app_html(a):
         tag = "새 지원 · 대기" if a["new"] else "대기 중인 지원"
         return (f'<div class="pb-chip pb-pending"><b>{tag}</b> {name} <span class="pb-role">{role}</span>'
                 f'{_votes_html(a["votes"])}</div>')
+    why = f'<div class="pb-why">까닭: {escape(a["reason"])}</div>' if a.get("reason") else ""
     if a["state"] == "rejected":
         return (f'<div class="pb-chip pb-rejected"><span class="pb-sign">−</span><s>{name}</s> '
-                f'<span class="pb-role">{role}</span><span class="pb-tag">거절된 지원</span>{_votes_html(a["votes"])}</div>')
-    return (f'<div class="pb-chip pb-blocked"><b>지원 막힘</b> {name} <span class="pb-role">{role}</span></div>')
+                f'<span class="pb-role">{role}</span><span class="pb-tag">거절된 지원</span>{_votes_html(a["votes"])}{why}</div>')
+    return (f'<div class="pb-chip pb-blocked"><b>지원 막힘</b> {name} <span class="pb-role">{role}</span>{why}</div>')
 
 
 def board_html(model):

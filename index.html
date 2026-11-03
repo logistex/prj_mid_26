@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- 2026-11-03 12:10 KST -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>과제 점수 분포</title>
+<style>
+:root{--bg:#fcfcfb;--card:#f1efe8;--ink:#0b0b0b;--ink2:#52514e;--ink3:#898781;--grid:#e1e0d9;--line:rgba(11,11,11,.12);--a:#2a78d6;--b:#eb6834}
+@media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--card:#262624;--ink:#f0efec;--ink2:#c3c2b7;--ink3:#898781;--grid:#2c2c2a;--line:rgba(255,255,255,.12);--a:#3987e5;--b:#d95926}}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:14px}
+main{max-width:860px;margin:0 auto;padding:16px}
+.row{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:0 0 12px;color:var(--ink2)}
+label{display:flex;align-items:center;gap:6px}
+select,input[type=range]{font:inherit}
+select{padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 12px}
+.card{background:var(--card);border-radius:8px;padding:10px 14px}
+.card .t{font-size:13px;color:var(--ink2)}.card .v{font-size:20px;font-weight:500}.card .s{font-size:12px;color:var(--ink2)}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--ink2);margin:0 0 6px}.sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:4px}
+.chart{position:relative;width:100%;height:340px}
+.note{font-size:12px;color:var(--ink3);margin:8px 0 0;line-height:1.6}
+</style>
+</head>
+<body>
+<main>
+<div class="row">
+  <label>과제<select id="asg"><option value="t">3개 과제 합계(45점 만점)</option><option value="m">wk09 중간 과제(30점)</option><option value="q">wk06 퀴즈게임(10점)</option><option value="h">wk03 손글씨(10점)</option></select></label>
+  <label>보기<select id="view"><option value="cmp">반별 비교</option><option value="A">A반만</option><option value="B">B반만</option><option value="all">두 반 합침</option></select></label>
+  <label>세로축<select id="ymode"><option value="pct">비중(%)</option><option value="n">인원(명)</option></select></label>
+  <label>구간 폭<input type="range" id="bw" step="0.25" style="width:130px"><b id="bwOut"></b>점</label>
+</div>
+<div class="row" style="font-size:13px">
+  <label><input type="checkbox" id="nos" checked>미제출 학생 포함(0점)</label>
+  <label><input type="checkbox" id="out">중간 과제 명단에 없는 3명 포함</label>
+</div>
+<div class="cards" id="cards"></div>
+<div class="legend" id="legend"></div>
+<div class="chart"><canvas id="hist" role="img" aria-label="선택한 과제의 구간별 학생 수나 비중 막대그래프"></canvas></div>
+<p class="note" id="note"></p>
+<p class="note">자료: wk03 손글씨와 wk06 퀴즈게임은 통합 성적(10/13), wk09 중간 과제는 1회차 채점 합계(11/3). 학생 이름과 학번은 넣지 않았음.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const R=[["A",10,10,30,0],["A",10,10,29.5,0],["A",0,0,0,1],["B",10,10,30,0],["B",0,0,0,2],["A",10,10,29,0],["A",10,10,30,0],["A",10,10,21,0],["B",10,9.75,27.5,0],["A",10,10,30,0],["A",10,10,30,0],["B",10,10,30,0],["A",10,10,30,0],["B",7,0,30,0],["A",10,10,24,0],["A",10,10,30,0],["A",0,0,0,0],["B",10,10,30,0],["B",10,10,28.5,0],["B",10,9.5,30,0],["B",10,10,30,0],["A",0,0,0,1],["B",4,9.75,23,0],["A",10,10,30,0],["B",7,10,30,0],["A",10,10,30,0],["A",10,10,30,0],["B",10,10,30,0],["B",8,9.75,30,0],["A",0,9.75,26,0],["B",10,10,29,0],["A",0,0,29,0],["A",10,0,0,2],["A",9.5,10,17,0],["B",0,0,14,0],["A",7,10,30,0],["A",0,0,17,0],["A",10,10,30,0],["B",0,0,1,0],["B",10,10,30,0],["A",7.9,9.5,29,0],["A",0,0,0,0],["A",0,10,28.5,0],["A",0,0,29,0],["A",2,0,0,2],["A",0,1,21.5,0],["A",0,10,20.5,0],["B",0,0,0,1],["B",0,0,1.5,0],["A",10,10,20,0],["A",7,0,1,0],["B",10,10,30,0],["B",0,0,0,1],["B",10,0,0,1],["A",8,10,20.5,0],["A",8,9.75,30,0],["B",5,6,29,0]];
+const CFG={t:{max:45,bw:5,lo:0.5,hi:15,lab:'3개 과제 합계(45점 만점)',out:false},m:{max:30,bw:2.5,lo:0.5,hi:10,lab:'중간 과제(30점)',out:false},q:{max:10,bw:1,lo:0.25,hi:5,lab:'퀴즈게임(10점)',out:true},h:{max:10,bw:1,lo:0.25,hi:5,lab:'손글씨(10점)',out:true}};
+const val=(r,a)=>a==='h'?r[1]:a==='q'?r[2]:a==='m'?r[3]:r[3]+(r[1]+r[2])*15/20;
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const f1=v=>Math.abs(v-Math.round(v))<1e-9?String(Math.round(v)):(Math.round(v*100)/100).toString();
+const $=id=>document.getElementById(id);
+let chart,curA=null;
+function stats(xs){const s=[...xs].sort((a,b)=>a-b),n=s.length;if(!n)return{n:0,mean:'-',med:'-'};return{n,mean:(s.reduce((a,b)=>a+b,0)/n).toFixed(2),med:f1(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2)}}
+function card(t,st,max){return `<div class="card"><div class="t">${t} · ${st.n}명</div><div class="v">평균 ${st.mean}</div><div class="s">중앙값 ${st.med} / ${max}</div></div>`}
+function draw(){
+  const a=$('asg').value,c=CFG[a],bw=$('bw');
+  if(curA!==a){bw.min=c.lo;bw.max=c.hi;bw.value=c.bw;$('out').checked=c.out;curA=a;}
+  const w=+bw.value,pct=$('ymode').value==='pct';$('bwOut').textContent=f1(w);
+  const rows=R.filter(r=>($('nos').checked||r[4]!==1)&&($('out').checked||r[4]!==2));
+  const xsA=rows.filter(r=>r[0]==='A').map(r=>val(r,a)),xsB=rows.filter(r=>r[0]==='B').map(r=>val(r,a)),xsAll=xsA.concat(xsB);
+  const v=$('view').value,CA=css('--a'),CB=css('--b'),ink=css('--ink2'),grid=css('--grid');
+  $('cards').innerHTML=(v==='cmp'||v==='A'?card('A반',stats(xsA),c.max):'')+(v==='cmp'||v==='B'?card('B반',stats(xsB),c.max):'')+(v==='cmp'||v==='all'?card('두 반',stats(xsAll),c.max):'');
+  const edges=[];for(let x=0;x<c.max-1e-9;x+=w)edges.push(x);
+  const labels=edges.map((lo,i)=>{const hi=Math.min(lo+w,c.max);return i===edges.length-1?`${f1(lo)}–${f1(hi)}`:`${f1(lo)}–${f1(hi)} 미만`});
+  const cnt=xs=>edges.map((lo,i)=>{const hi=lo+w,last=i===edges.length-1,k=xs.filter(x=>x>=lo-1e-9&&(last?x<=c.max+1e-9:x<hi-1e-9)).length;return pct?(xs.length?Math.round(k/xs.length*1000)/10:0):k});
+  const ds=[];
+  if(v==='cmp'){ds.push({label:'A반',data:cnt(xsA),backgroundColor:CA,n:xsA.length},{label:'B반',data:cnt(xsB),backgroundColor:CB,n:xsB.length});$('legend').innerHTML=`<span><span class="sw" style="background:${CA}"></span>A반 ${xsA.length}명</span><span><span class="sw" style="background:${CB}"></span>B반 ${xsB.length}명</span>`;}
+  else{const xs=v==='A'?xsA:v==='B'?xsB:xsAll;ds.push({label:v==='all'?'두 반':v+'반',data:cnt(xs),backgroundColor:v==='B'?CB:CA,n:xs.length});$('legend').innerHTML='';}
+  ds.forEach(d=>{d.borderRadius={topLeft:4,topRight:4};d.maxBarThickness=24});
+  $('note').textContent=(a==='t'?'합계 = 중간 과제(30점) + (손글씨 + 퀴즈게임)의 합 20점을 15점으로 환산. ':'')+(pct?'비중은 반마다 그 반의 대상 인원에 대한 비율. ':'')+'과제를 바꾸면 "명단에 없는 3명"은 그 과제의 제출 대상에 맞춰 자동으로 켜지거나 꺼짐(손글씨, 퀴즈게임은 포함, 중간 과제와 합계는 제외). 구간은 아래쪽 끝을 포함하고 위쪽 끝은 포함하지 않음(마지막 구간만 만점 포함).';
+  const data={labels,datasets:ds},ytxt=pct?'비중(%)':'학생 수',tick=pct?(t=>t+'%'):(t=>t);
+  if(chart){chart.data=data;chart.options.scales.x.title.text=c.lab;chart.options.scales.y.title.text=ytxt;chart.options.scales.y.ticks.callback=tick;chart.update();return;}
+  chart=new Chart($('hist'),{type:'bar',data,options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>{const k=$('ymode').value==='pct'?Math.round(x.parsed.y*x.dataset.n/100):x.parsed.y;return `${x.dataset.label} ${k}명`+(x.dataset.n?` (${(k/x.dataset.n*100).toFixed(1)}%)`:'')}}}},
+    scales:{x:{grid:{display:false},ticks:{color:ink,autoSkip:false,maxRotation:45},title:{display:true,text:c.lab,color:ink}},y:{beginAtZero:true,ticks:{color:ink,precision:0,callback:tick},grid:{color:grid},title:{display:true,text:ytxt,color:ink}}}}});
+}
+['asg','view','bw','nos','out','ymode'].forEach(id=>$(id).addEventListener('input',draw));
+draw();
+</script>
+</body>
+</html>
